@@ -93,3 +93,7 @@ The sysprof crash (tarantool/tarantool#11184): a sample taken after an `on_repla
 - gdb's inline frames of `-O2` C code are printed as `[inlined]` and not otherwise examined.
 - `tarantool_L` is shared by several fibers whose cframes lie on different C stacks; without `tarantool-gdb.py` such frames are marked, not attributed to a fiber.
 - Not tried: ffi callbacks, hooks, the error handler of `xpcall`, `lua_cpcall` without a frame.
+
+## License
+
+BSD 2-Clause, see `LICENSE`.
