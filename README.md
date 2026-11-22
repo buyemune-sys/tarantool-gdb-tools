@@ -113,6 +113,7 @@ The sysprof crash (tarantool/tarantool#11184): a sample taken after an `on_repla
 | `core` | the same chains on `gcore` files, with no live process: the output matches the live one |
 | `tail` | the table of the tail call heuristic, positive and negative cases |
 | `crash` | the sysprof crashes in mode C (tarantool/tarantool#11184): no Python error, `!!` with the shift of `top_frame`, the right Lua frame (long and racy) |
+| `rust` | Lua and Rust modules calling each other (see [below](#the-rust-group)), live and on `gcore` files; needs cargo, skipped without it |
 | `all` | everything; the default is all but `crash` |
 
 ```
@@ -131,6 +132,17 @@ export $(tests/fetch.sh 3.9.0 amd64 ~/tarantool-3.9.0)
 tests/run.sh
 ```
 
+### The rust group
+
+`tests/rust` holds two Rust modules, each a cargo workspace of its own with its `Cargo.lock`. `tests/rust/build.sh` builds them into `tests/rust/target` (or `LJBT_RUST_TARGET`); the test runs it too, cargo keeps it incremental.
+
+- `plain`: a Lua C module and an FFI function on the bare Lua C API, no crates, so it builds offline. Four profiles: `ljbt-debug` (release with debuginfo), `release` (symbols only), `ljbt-strip` (no symbols, the Rust frames are `??`), `ljbt-abort` (`panic = "abort"`).
+- `tnt`: on the `tarantool` crate 11.0.0 (rustc 1.89 or newer): `tlua` calls into Lua, fibers started from Rust, a C stored procedure (`#[tarantool::proc]`).
+
+`tests/lua/rust.lua` runs the scenarios: Lua -> Rust -> `lua_call` -> Lua -> Rust -> Lua -> a box C function; 30 levels of Lua <-> Rust recursion; a Lua error thrown through the Rust frames to a `pcall` (with `panic = "abort"` it aborts the process: the landing pad of the Rust frame calls `panic_cannot_unwind`); a Rust function called through FFI from a hot loop, in a JIT trace; a `tlua` function that calls Lua in a new Lua thread; the stored procedure through `box.func` and through an iproto `call`; a fiber started from Rust that sleeps in Lua and one that sleeps in Rust. The Lua frames are compared with `debug.getinfo`, the C frames with `bt -no-filters`, the VM bands and the Rust frames between them with the structure of the chain. The stops of the debuginfo build and of `tnt` are also written with `gcore`, and the cores must give the same output. Known errors of `lj-bt` are `expectedFailure` tests, the reason in a comment.
+
+`box.func` loads a C module from a copy that it deletes right after `dlopen`: gdb on a core finds no file for it and has no symbols of its frames, unless `set solib-search-path` names a directory with the module under the name of the copy, `<package>.so`.
+
 ## CI
 
 `.github/workflows/test.yml` runs the tests against every Tarantool CE minor that tt v3 supports, the last patch of each, on both architectures:
@@ -139,11 +151,12 @@ tests/run.sh
 |---|---|---|---|---|---|---|---|
 | LuaJIT extension | `luajit-gdb.py` | `luajit-gdb.py` | `luajit-gdb.py` | `luajit_dbg.py` | `luajit_dbg.py` | `luajit_dbg.py` | `luajit_dbg.py` |
 | amd64 (`ubuntu-24.04`) | all groups | all groups | all groups | all groups | all groups | all groups | all groups |
-| arm64 (`ubuntu-24.04-arm`) | oracle core random tail | same | same | same | same | same | same |
+| arm64 (`ubuntu-24.04-arm`) | oracle core random tail rust | same | same | same | same | same | same |
 
 - The binaries are the static debs of Tarantool's package repository (they carry DWARF), cached per version and architecture; the extensions come from the tag (`tools/tarantool-gdb.py`) and from tarantool/luajit at the tag's `third_party/luajit`.
 - On push and pull requests the long groups are cut: 50 seeds, 100 stops, two crash attempts of 20 s. The daily scheduled run takes 200 seeds, 500 stops, three attempts of 40 s.
 - On arm64 LuaJIT has no sysprof (nor memprof), so `stops` and `crash` are skipped, with a notice in the log. The arm64 layouts of `lj-bt` were never run before this CI, so the arm64 jobs are `continue-on-error` until they are green.
+- The Rust modules of the `rust` group are built with the runner's Rust (stable is installed if it is missing or older than 1.89), cached per architecture together with the crates.
 - A failed job uploads its work directories (`gdb.log`, `probe.jsonl`, `violations.jsonl`) as the artifact `logs-<version>-<arch>`.
 
 ## License
