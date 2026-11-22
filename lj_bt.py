@@ -12,7 +12,8 @@
 # only what luajit-gdb.py (Tarantool 3.3-3.5) and luajit_dbg.py (3.6+)
 # both have: mref, gcref, gcval, G, J, funcproto, frame_ftsz, typenames,
 # itypemap, vm_state, LJ_GC64, LJ_FR2.  Bytecode and IR names, which
-# differ between LuaJIT versions, come from the enums in DWARF.
+# differ between LuaJIT versions, come from the enums in DWARF (or, if a
+# build has none, from the BYTECODES and IRS tables of luajit_dbg.py).
 #
 # How the two stacks are matched (see lj_err.c:err_unwind, lj_frame.h):
 #  * Every entry into the VM from C (lj_vm_call/pcall/cpcall/resume,
@@ -135,6 +136,25 @@ def ljbt_offsetof(typestr, field):
     return ljbt_type(typestr)[field].bitpos // 8
 
 
+def ljbt_enum_or_table(example, table, what, info):
+    '''The enum of DWARF (see ljbt_enum) or, if the build has none (an
+    enum whose members are only used as constants may be left out,
+    tarantool/tarantool#13094), the name table of the LuaJIT extension,
+    noted; with neither, a clear refusal.'''
+    try:
+        return ljbt_enum(example)
+    except gdb.error:
+        pass
+    names = getattr(ljbt_lj, table, None)
+    if names:
+        info.append('{} names from the {} table of the LuaJIT extension: '
+                    'no enum with {} in DWARF'.format(what, table, example))
+        return dict((n, i) for i, n in enumerate(names))
+    raise gdb.GdbError('lj-bt: no {} names: DWARF has no enum with {} and '
+                       'the LuaJIT extension no {} table'.format(
+                           what, example, table))
+
+
 def ljbt_enum(example):
     '''{name without prefix: value} of the enum the constant belongs to,
     from DWARF: ljbt_enum('BC_CALL') is the BCOp enum (lj_bc.h).'''
@@ -249,9 +269,11 @@ class LJBTConf(object):
         self.str_size = ljbt_sizeof('GCstr')
         self.mcode_size = ljbt_sizeof('MCode')      # snap->mcofs unit
         # Bytecodes and IR ops of this very LuaJIT (lj_bc.h, lj_ir.h).
-        self.bc = ljbt_enum('BC_CALL')
+        self.info = []
+        self.bc = ljbt_enum_or_table('BC_CALL', 'BYTECODES', 'bytecode',
+                                     self.info)
         self.bcname = dict((v, k) for k, v in self.bc.items())
-        self.ir = ljbt_enum('IR_KGC')
+        self.ir = ljbt_enum_or_table('IR_KGC', 'IRS', 'IR', self.info)
         self.funcf_ops = set(self.bc[n] for n in ('FUNCF', 'IFUNCF',
                                                   'JFUNCF') if n in self.bc)
         self.bcmode = None      # lj_bc_mode[], read on first use.
@@ -2219,7 +2241,7 @@ def ljbt_backtrace(arg_L, limit, out, as_json=False):
     defL, hdr, other_fiber = ljbt_default_L(arg_L)
     gdb.invalidate_cached_frames()
     cframes, unotes = ljbt_walk_cstack(other_fiber, limit)
-    notes = []
+    notes = ['-- ' + n for n in ljbt_conf().info]
     tail = ljbt_stitch(cframes, defL, notes,
                        truncated=LJBT_MORE_FRAMES in unotes)
     notes += unotes
@@ -2530,7 +2552,7 @@ if LJBTFrameDecorator is not None:
                     return iter(decos)
                 defL, hdr, other = ljbt_default_L(None)
                 cframes = [LJBTCFrame(d.inferior_frame()) for d in decos]
-                notes = []
+                notes = ['-- ' + n for n in c.info]
                 tail = ljbt_stitch(cframes, defL, notes, truncated)
                 res = [LJBTDecorated(d, cfr)
                        for d, cfr in zip(decos, cframes)]

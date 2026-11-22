@@ -41,7 +41,7 @@ class EnvTest(unittest.TestCase):
     def tearDown(self):
         self.wd.cleanup()
 
-    def gdb(self, script, args=None, core=None, binary=None):
+    def gdb(self, script, args=None, core=None, binary=None, timeout=230):
         cmd = self.wd.write('env.gdb', script)
         argv = ['gdb', '--batch', '--nx', '--quiet', '--command', cmd]
         if core:
@@ -53,7 +53,7 @@ class EnvTest(unittest.TestCase):
                    LJBT_JIT_MODE='off')
         p = subprocess.run(argv, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                           universal_newlines=True, timeout=230, env=env,
+                           universal_newlines=True, timeout=timeout, env=env,
                            cwd=C.ROOT)
         return p.stdout
 
@@ -111,6 +111,43 @@ class EnvTest(unittest.TestCase):
                        STOPS.format(cmd='lj-bt\nkill'), scenario())
         self.assertIn('!! L=', out)
         self.assertRegex(out, r'more than 1 cframes|more than 3 frame links')
+
+    def test_no_enum_in_dwarf(self):
+        # tarantool/tarantool#13094: an enum used only through its
+        # constants may be absent from DWARF.  lj-bt then takes the names
+        # of the LuaJIT extension, noted, or refuses clearly.  The refusal
+        # is quick too: a run takes a second, the trace unwinder must not
+        # try the failing build again on each of the thousands of times
+        # gdb asks it before the stop (it took the run past any timeout).
+        hide = self.wd.write('noenum.py', (
+            'import gdb\n'
+            '_orig = ljbt_enum\n'
+            'def ljbt_enum(example):\n'
+            '    if example in ("BC_CALL", "IR_KGC"):\n'
+            '        raise gdb.error("No symbol \\"%s\\" in current context."'
+            ' % example)\n'
+            '    return _orig(example)\n'))
+        notab = self.wd.write('notab.py', 'BYTECODES = IRS = None\n')
+        for extra, expect in ((hide, r'(?m)^-- bytecode names from the '
+                                     r'BYTECODES table'),
+                              (hide + '\nsource ' + notab,
+                               r'lj-bt: no bytecode names: DWARF has no '
+                               r'enum with BC_CALL')):
+            with self.subTest(extra=os.path.basename(extra)):
+                out = self.gdb(C.gdb_prelude() + 'source {}\n'.format(
+                    extra) + STOPS.format(cmd='lj-bt\nkill'), scenario(),
+                    timeout=60)
+                if 'BYTECODES' in expect and \
+                        'luajit-gdb.py' in C.LUAJIT_DBG:
+                    continue        # The old extension has no tables.
+                self.assertRegex(out, expect)
+                self.assertNotIn('Traceback', out)
+                if 'BYTECODES' in expect:
+                    # The names serve: Lua frames, the tail call heuristic
+                    # (it decodes the CALL), no mark.
+                    self.assertRegex(out, r'(?m)^#\d+\.\d+\s+\[lua\] ')
+                    self.assertIn('[heuristic]', out)
+                    self.assertNotRegex(out, r'(?m)^\s*!!')
 
     def test_example(self):
         # examples/example.gdb as README says to run it, from the root.

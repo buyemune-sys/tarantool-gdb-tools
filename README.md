@@ -25,7 +25,7 @@ Tested on x86_64 with the official static debs of Tarantool CE 3.3 to 3.9 (GC64,
 (gdb) lj-bt --all-fibers
 ```
 
-Load the extension of the LuaJIT the binary was built with: `src/luajit_dbg.py` of tarantool/luajit at the commit of Tarantool's `third_party/luajit`, which is `src/luajit-gdb.py` before LuaJIT 5db8c217 (Tarantool 3.3-3.5). `lj-bt` takes only the helpers both have; the bytecode and IR names it needs come from the DWARF of the binary. `tests/fetch.sh` gets the right files for a release.
+Load the extension of the LuaJIT the binary was built with: `src/luajit_dbg.py` of tarantool/luajit at the commit of Tarantool's `third_party/luajit`, which is `src/luajit-gdb.py` before LuaJIT 5db8c217 (Tarantool 3.3-3.5). `lj-bt` takes only the helpers both have; the bytecode and IR names it needs come from the DWARF of the binary (if a build has no such enum, from the tables of `luajit_dbg.py`, with a `--` note; `luajit-gdb.py` has none, then `lj-bt` says so and stops). `tests/fetch.sh` gets the right files for a release.
 
 For fibers, load Tarantool's own extension after the process has started: `python import gdb.printing`, then `source <tarantool-src>/tools/tarantool-gdb.py`. After `tt-fiber <id>`, `lj-bt` prints the stack of that fiber.
 
