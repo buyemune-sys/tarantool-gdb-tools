@@ -168,6 +168,7 @@ class LJBTConf(object):
         self.G = ljbt_find_G()
         self.proto_size = ljbt_sizeof('GCproto')
         self.str_size = ljbt_sizeof('GCstr')
+        self.mcode_size = ljbt_sizeof('MCode')      # snap->mcofs unit
         # Bytecodes and IR ops of this very LuaJIT (lj_bc.h, lj_ir.h).
         self.bc = ljbt_enum('BC_CALL')
         self.bcname = dict((v, k) for k, v in self.bc.items())
@@ -747,8 +748,9 @@ class LJBTTrace(object):
 
     def snapshot(self, pc):
         '''lj_trace.c:lj_trace_unwind: rightmost snapshot with mcofs <=
-        pc - mcode.'''
-        ofs = pc - self.mcode
+        pc - mcode, in MCode units: bytes on x86, 4-byte instructions on
+        arm64 (lj_target_*.h), where a byte offset picks a later one.'''
+        ofs = (pc - self.mcode) // ljbt_conf().mcode_size
         nsnap = int(self.T['nsnap'])
         lo, hi = 0, nsnap
         snap = self.T['snap']
