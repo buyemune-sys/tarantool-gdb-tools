@@ -130,6 +130,16 @@ def ljbt_reset(event=None):
 
 def ljbt_on_stop(event):
     ljbt_reset()
+    # tarantool-gdb.py keeps the fiber picked by `tt-fiber` (or the one
+    # running when its unwinder was created) across `continue`: after a
+    # stop in another fiber `bt` and lj-bt would unwind a stale saved
+    # context.  A new stop starts from the running fiber.
+    FU = getattr(ljbt_lj, 'FiberUnwinder', None)
+    if FU is not None:
+        try:
+            FU.instance().reset_fiber()
+        except Exception:
+            pass
     try:
         ljbt_conf()
         gdb.invalidate_cached_frames()
@@ -433,7 +443,8 @@ class LJBTState(object):
     def __init__(self, addr, top=None, topnote=None):
         c = ljbt_conf()
         self.addr = addr
-        self.notes = []
+        self.notes = []         # Discrepancies ("!!").
+        self.info = []          # Facts worth showing ("--").
         L = ljbt_cast('lua_State *', addr)
         self.base = int(L['base'])
         self.top = int(L['top'])
@@ -661,11 +672,10 @@ class LJBTTrace(object):
         return hi - 1 if hi > 0 else None
 
     def frames(self, snapno):
-        '''Inlined frames of snapshot snapno (lj_snap.c:lj_snap_restore,
-        non-FR2 only).  Returns (pc, [(slot, func, link)]) bottom-up.'''
-        c = ljbt_conf()
-        if c.fr2:
-            return None
+        '''Inlined frames of snapshot snapno (lj_snap.c:lj_snap_restore).
+        Returns (pc, [(slot, func, link, iscont)]) bottom-up.'''
+        if ljbt_conf().fr2:
+            return self.frames_fr2(snapno)
         T = self.T
         snap = T['snap'][snapno]
         mapofs = int(snap['mapofs'])
@@ -697,6 +707,60 @@ class LJBTTrace(object):
                     ins = ir[ref]
                     if ljbt_lj.IRS[int(ins['o'])] == 'KGC':
                         func = int(ljbt_lj.ir_kgc(ins))
+                except (gdb.error, IndexError):
+                    pass
+            out.append((slot, func, link, bool(sn & LJBT_SNAP_CONT)))
+        return pc, out
+
+    def kgc(self, ref):
+        ins = self.T['ir'][ref]
+        if ljbt_lj.IRS[int(ins['o'])] == 'KGC':
+            return int(ljbt_lj.ir_kgc(ins))
+        return None
+
+    def frames_fr2(self, snapno):
+        '''LJ_FR2: a frame is two slots, [func][link].  The link slot is
+        the SNAP_FRAME entry, its IR is a KNUM holding the raw 64-bit link
+        (lj_snap.c:snapshot_slots), the function is the entry of the slot
+        below it; slot 1 (the link of the trace's base frame) is skipped.
+        The PC is the u64 after the entries: pc << 8 | baseslot - 2
+        (snapshot_framelinks, snap_pc).'''
+        T = self.T
+        snap = T['snap'][snapno]
+        mapofs = int(snap['mapofs'])
+        nent = int(snap['nent'])
+        smap = T['snapmap']
+        ents = [int(smap[mapofs + i]) for i in range(nent)]
+        pc = (int(smap[mapofs + nent]) |
+              int(smap[mapofs + nent + 1]) << 32) >> 8
+        byslot = dict((sn >> 24, sn) for sn in ents)
+        out = []
+        for sn in ents:
+            slot = sn >> 24
+            if slot == 0:
+                # The function of the base frame, if the trace changed it
+                # (a tail call inside the trace).
+                try:
+                    func = self.kgc(sn & 0xffff)
+                except (gdb.error, IndexError):
+                    func = None
+                if func:
+                    out.append((0, func, None, False))
+                continue
+            if slot == 1 or not sn & (LJBT_SNAP_FRAME | LJBT_SNAP_CONT):
+                continue
+            link = None
+            try:
+                ins = T['ir'][sn & 0xffff]
+                if ljbt_lj.IRS[int(ins['o'])] in ('KNUM', 'KINT64'):
+                    link = ljbt_u64(int(ljbt_lj.ir_knum(ins)))
+            except (gdb.error, IndexError, AssertionError):
+                pass
+            func = None
+            fsn = byslot.get(slot - 1)
+            if fsn is not None and sn & LJBT_SNAP_FRAME:
+                try:
+                    func = self.kgc(fsn & 0xffff)
                 except (gdb.error, IndexError):
                     pass
             out.append((slot, func, link, bool(sn & LJBT_SNAP_CONT)))
@@ -814,6 +878,8 @@ def ljbt_find_G():
 
 
 def ljbt_sysprof_running():
+    '''sysprof is profiling in a mode that walks the Lua stack (L or C;
+    mode D, LUAM_SYSPROF_DEFAULT = 0 in lmisclib.h, only counts).'''
     sym = gdb.lookup_static_symbol('sysprof')
     if sym is None:
         return False
@@ -822,7 +888,8 @@ def ljbt_sysprof_running():
     except gdb.error:
         prof = 1                # lj_sysprof.c: enum { SPS_IDLE, SPS_PROFILE
     try:
-        return int(sym.value()['state']) == prof
+        sp = sym.value()
+        return int(sp['state']) == prof and int(sp['opt']['mode']) != 0
     except gdb.error:
         return False
 
@@ -878,7 +945,9 @@ class LJBTCFrame(object):
         self.cf = None
         self.inchain = False
         self.annot = []
-        self.lua = []           # rendered Lua lines after this frame
+        self.lua = []           # Lua entries (dicts) run in this frame
+        self.folded = None      # Lua C function entry folded into it
+        self.coroutine = False
         if self.type == gdb.SIGTRAMP_FRAME:
             self.kind = 'sig'
             return
@@ -1193,8 +1262,9 @@ def ljbt_callsite(link):
     return caller, pos, a + extra, a
 
 
-def ljbt_tailcall_lines(link):
-    '''Lines to insert right after the frame of link (newest first).'''
+def ljbt_tailcall_lines(link, fn=None):
+    '''Lines to insert right after the frame of link (newest first); fn
+    is the function running in it if it is not the one in the slot.'''
     site = ljbt_callsite(link)
     if site is None:
         return [], None
@@ -1208,7 +1278,7 @@ def ljbt_tailcall_lines(link):
     if val is None:
         return [], "called as {}, not verifiable".format(called)
     tn, obj = val
-    fn = link.fn
+    fn = fn or link.fn
     if tn == 'LJ_TPROTO':
         if fn.kind == 'lua' and fn.proto.addr == obj:
             return [], None
@@ -1302,15 +1372,17 @@ def ljbt_tail_chain(exp, fn):
 
 def ljbt_vmregs_top(cfr, st):
     '''For an interrupted VM frame, the real top frame from BASE and PC
-    registers (x64: rdx and rbx, vm_x86.dasc:28-46), if they make sense.'''
+    registers (x64 non-Windows: rdx and rbx in both vm_x86.dasc:28-46 and
+    vm_x64.dasc:21-32), if they make sense.'''
     c = ljbt_conf()
-    if c.arch != 'x64' or c.gc64:
+    if c.arch != 'x64':
         return None
     if not (cfr.name and cfr.name.startswith('lj_BC_')):
         return None
+    mask = 0xffffffffffffffff if c.gc64 else 0xffffffff
     try:
-        base = int(cfr.frame.read_register('rdx')) & 0xffffffff
-        pc = int(cfr.frame.read_register('rbx')) & 0xffffffff
+        base = int(cfr.frame.read_register('rdx')) & mask
+        pc = int(cfr.frame.read_register('rbx')) & mask
     except (gdb.error, ValueError):
         return None
     if not (st.stack < base < st.stack + 0x10000000):
@@ -1342,11 +1414,15 @@ def ljbt_render_links(seg, top_pc, out):
             prev = link
             continue        # Dummy frame, lj_err_optype_call().
         fn = link.fn
+        override = None
+        if prev is None and top_pc is not None and len(top_pc) > 2 and \
+                top_pc[2] is not None:
+            override, fn = fn, top_pc[2]
         line, note = None, None
         if fn.kind == 'lua':
             if prev is None:
                 if top_pc is not None:
-                    line, note = top_pc
+                    line, note = top_pc[:2]
                 else:
                     line, note = ljbt_cframe_line(seg, fn)
             elif prev.islua:
@@ -1376,6 +1452,9 @@ def ljbt_render_links(seg, top_pc, out):
         elif link.typep in (LJBT_FT_PCALL, LJBT_FT_PCALLH) and \
                 not link.islua:
             how.append('protected by pcall/xpcall')
+        if override is not None:
+            how.append('tail-called inside the trace, the frame slot still '
+                       'holds {}'.format(ljbt_func_where(override)))
         s = fn.describe(line, note)
         if how:
             s += '  <' + ', '.join(how) + '>'
@@ -1383,7 +1462,7 @@ def ljbt_render_links(seg, top_pc, out):
         if seg.L.broken is None and not LJBT_OPTS.get('no_tail'):
             # Silent on an inconsistent stack: any read error -> nothing.
             try:
-                tail, why = ljbt_tailcall_lines(link)
+                tail, why = ljbt_tailcall_lines(link, fn)
             except (gdb.error, ValueError, IndexError, KeyError,
                     RuntimeError):
                 tail, why = [], None
@@ -1493,13 +1572,16 @@ def ljbt_stitch(cframes, defL, out):
     for L, (top, why) in pending_top.items():
         st = state(L, top, why)
         if why == 'trace':
-            st.notes.append('running a trace: Lua frames from g->jit_base '
-                            '0x{:x}{}'.format(jit_base, '' if
-                                              st.base == jit_base else
-                                              ', L->base 0x{:x} is stale'
-                                              .format(st.base)))
+            # Not a discrepancy: L->base is not kept in sync in a trace.
+            st.info.append('running a trace: Lua frames from g->jit_base '
+                           '0x{:x}{}'.format(jit_base, '' if
+                                             st.base == jit_base else
+                                             ', L->base 0x{:x} is behind'
+                                             .format(st.base)))
         elif st.base - LJBT_TV != top:
-            st.notes.append('VM BASE register says top frame 0x{:x}, '
+            # Neither: the interpreter syncs L->base only when it leaves
+            # the VM; lj-bt shows the frames from the register.
+            st.info.append('VM BASE register says top frame 0x{:x}, '
                             'L->base-1 is 0x{:x}: L->base is stale'.format(
                                 top, st.base - LJBT_TV))
 
@@ -1578,10 +1660,16 @@ def ljbt_stitch(cframes, defL, out):
             fname = ljbt_symname(fn.f)
             if target is not None and fname and target.name == fname:
                 fold = target
-            elif fn.kind == 'c':
+            elif fn.kind == 'c' and (i == 0 or cframes[i - 1].kind == 'sig'):
+                # Stopped in the VM right around the call.
                 cfr.lua.append(ljbt_warn(
-                    'no C frame of {} right above this VM frame (tail '
-                    'call? stack top?)'.format(fname)))
+                    'no C frame of {} above this VM frame: the call is in '
+                    'progress'.format(fname)))
+            elif fn.kind == 'c':
+                # C frames above, but not this one: it tail-called (jmp).
+                cfr.lua.append({'kind': 'info', 'text':
+                                '-- no C frame of {} right above this VM '
+                                'frame: a tail call in C?'.format(fname)})
         lines = []
         ljbt_render_links(seg, top_pc, lines)
         if fold:
@@ -1615,6 +1703,8 @@ def ljbt_stitch(cframes, defL, out):
         except gdb.error:
             pass
     for L, st in states.items():
+        for n in st.info:
+            out.append('-- L=0x{:x}: {}'.format(L, n))
         for n in st.notes:
             out.append('!! L=0x{:x}: {}'.format(L, n))
         for seg in st.segments:
@@ -1698,11 +1788,18 @@ def ljbt_render_trace(tfr, st, seg):
         else:
             cur_pc = None
     tfr.lua.extend(lines)
-    if base_fn is not None and base_fn.kind == 'lua' and cur_pc is not None:
-        line = base_fn.proto.line_pc(cur_pc) if cur_exact else \
-            base_fn.proto.line_retpc(cur_pc)
-        return (line, 'trace {} base frame, snapshot #{}'.format(t.no, sn))
-    return None
+    # The trace tail-called inside itself: the frame slot in memory still
+    # holds the old function, the snapshot has the running one.
+    base = chain[0][0]
+    override = base if base is not None and base_fn is not None and \
+        base.addr != base_fn.addr else None
+    if base is not None and base.kind == 'lua' and cur_pc is not None:
+        line = base.proto.line_pc(cur_pc) if cur_exact else \
+            base.proto.line_retpc(cur_pc)
+        return (line, 'trace {} base frame, snapshot #{}'.format(t.no, sn),
+                override)
+    return (None, 'trace {} base frame, snapshot #{}'.format(t.no, sn),
+            override)
 
 
 def ljbt_main_L():
@@ -1800,7 +1897,7 @@ def ljbt_backtrace(arg_L, limit, out, as_json=False):
         out.append(s)
         n = 0
         for e in cfr.lua:
-            if e['kind'] == 'warn':
+            if e['kind'] in ('warn', 'info'):
                 out.append('      ' + e['text'])
                 continue
             n += 1
@@ -1839,7 +1936,8 @@ def ljbt_json(defL, hdr, cframes, notes, tail):
         f['folded'] = getattr(cfr, 'folded', None)
         f['warnings'] = [a for a in cfr.annot if a.startswith('!!')] + \
             [e['text'] for e in cfr.lua if e['kind'] == 'warn']
-        f['lua'] = [e for e in cfr.lua if e['kind'] != 'warn']
+        f['info'] = [e['text'] for e in cfr.lua if e['kind'] == 'info']
+        f['lua'] = [e for e in cfr.lua if e['kind'] not in ('warn', 'info')]
         frames.append(f)
         prev = cfr
     states = []
@@ -2050,7 +2148,9 @@ if LJBTFrameDecorator is not None:
 
         def elided(self):
             cfr = self.ljbt_cfr
-            sub = [LJBTLuaFrame(cfr.frame, t) for t in cfr.annot + cfr.lua]
+            sub = [LJBTLuaFrame(cfr.frame, t if isinstance(t, str)
+                                else t['text'])
+                   for t in cfr.annot + cfr.lua]
             orig = self.ljbt_base.elided()
             if orig is not None:
                 sub.extend(orig)

@@ -1,16 +1,18 @@
--- Scenarios for lj-bt.
+-- Scenarios for lj-bt (see example.gdb).
 -- Usage: tarantool mixed.lua <scenario> <jit on|off> <main|fiber>
+-- Scenarios: sort, pcall, coro, error, trace, sleep, tail.
 -- gdb stops: `lbox_session_id` is the marker called right before the
 -- scenario; then the scenario hits box_index_get (memtx get, FFI),
 -- lbox_index_get (vinyl get, Lua C function), lj_err_throw or
--- box_space_id_by_name (FFI from a trace).
+-- box_space_id_by_name (FFI from a trace).  Box files and the unix
+-- socket go to $TMPDIR/lj-bt-example-<scenario>-<jit>-<where>.
 local fio = require('fio')
 local fiber = require('fiber')
 local ffi = require('ffi')
 
-local here = fio.dirname(fio.abspath(arg[0]))
 local scen, jitmode, where = arg[1], arg[2] or 'on', arg[3] or 'main'
-local dir = here .. '/w/' .. scen .. '-' .. jitmode .. '-' .. where
+local dir = (os.getenv('TMPDIR') or '/tmp') .. '/lj-bt-example-' .. scen ..
+  '-' .. jitmode .. '-' .. where
 fio.rmtree(dir)
 fio.mktree(dir)
 box.cfg({

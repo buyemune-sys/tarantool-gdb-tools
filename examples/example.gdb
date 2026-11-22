@@ -1,27 +1,30 @@
-# Example: stop in a C function deep in a mixed C/Lua stack and print it.
-# Run from the root of the repository:
-#   gdb -q -x examples/example.gdb --args <tarantool> examples/mixed.lua sort on fiber
-# Replace <luajit-src> and <tarantool-src> with the sources of the very
-# Tarantool build being debugged (luajit_dbg.py must match its LuaJIT).
+# lj-bt on examples/mixed.lua.  From the repository root:
+#
+#   LJBT_LUAJIT_DBG=<luajit>/src/luajit_dbg.py \
+#   gdb -x examples/example.gdb --args tarantool examples/mixed.lua sort on main
+#
+# Stops in the C implementation of box.space.t:get() called from a
+# table.sort comparator and prints bt, lj-bt and the stitched bt.
 set pagination off
 set confirm off
+set print frame-arguments none
 handle SIGPROF nostop noprint pass
-source <luajit-src>/src/luajit_dbg.py
+handle SIGPIPE nostop noprint pass
+python
+import os
+gdb.execute('source ' + os.environ['LJBT_LUAJIT_DBG'])
+end
 source lj_bt.py
-
-# Optional, for `tt-fiber <id>` and `lj-bt --all-fibers`; load it after the
-# process has started, and import gdb.printing first.
-# python import gdb.printing
-# source <tarantool-src>/tools/tarantool-gdb.py
-
 break lbox_session_id
 run
 delete
 break box_index_get
 continue
-echo \n===== bt -no-filters (plain gdb)\n
+echo \n===== bt -no-filters\n
 bt -no-filters
 echo \n===== lj-bt\n
 lj-bt
 echo \n===== bt (lj-bt frame filter)\n
 bt
+echo \n===== lj-bt --tail-chain -v\n
+lj-bt --tail-chain -v
