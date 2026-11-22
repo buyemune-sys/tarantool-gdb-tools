@@ -12,20 +12,23 @@
 #   crash    layer 5: the sysprof mode C crashes (long, racy)
 #   cli      lj-bt through gdb commands: flags, threads, fibers, limits
 #   env      surroundings: missing extension, no DWARF, symbol-file, example
-#   all      everything; default: oracle core random stops tail cli env
+#   rust     Lua and Rust modules (tests/rust) calling each other; builds
+#            them with cargo, skipped without it
+#   all      everything; default: oracle core random stops tail cli env rust
 #
 # LJBT_LJ_BT runs the tests against another lj_bt.py (an older one, to see
 # a new test fail before its fix).
 #
 # Environment (see tests/common.py): LJBT_TARANTOOL and LJBT_LUAJIT_DBG are
 # required; LJBT_TT_GDB, LJBT_SEEDS, LJBT_SEED0, LJBT_STOPS, LJBT_JIT,
-# LJBT_ATTEMPTS, LJBT_CRASH_SECS, LJBT_KEEP, LJBT_VERBOSE; TMPDIR.
+# LJBT_ATTEMPTS, LJBT_CRASH_SECS, LJBT_KEEP, LJBT_VERBOSE; TMPDIR;
+# LJBT_RUST_TARGET, CARGO (tests/test_rust.py).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 : "${LJBT_TARANTOOL:?set LJBT_TARANTOOL to a tarantool binary with DWARF}"
 : "${LJBT_LUAJIT_DBG:?set LJBT_LUAJIT_DBG to luajit_dbg.py of that build}"
-[ $# -eq 0 ] && set -- oracle core random stops tail cli env
-[ "$*" = all ] && set -- oracle core random stops tail cli env crash
+[ $# -eq 0 ] && set -- oracle core random stops tail cli env rust
+[ "$*" = all ] && set -- oracle core random stops tail cli env rust crash
 cd "$here" || exit 1
 rc=0
 for g in "$@"; do
@@ -38,6 +41,7 @@ for g in "$@"; do
     crash) set_args="test_regress -k Crash" ;;
     cli) set_args="test_cli" ;;
     env) set_args="test_env" ;;
+    rust) set_args="test_rust" ;;
     *) echo "unknown group: $g" >&2; exit 2 ;;
     esac
     echo "### $g"
