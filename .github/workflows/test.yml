@@ -8,7 +8,20 @@ on:
   pull_request:
   schedule:
     - cron: '23 2 * * *'    # Daily: the full seeds, stops and crash runs.
+  # A manual run can pick one version and/or one architecture, e.g. to
+  # iterate on arm64 only.
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tarantool version, or "all"'
+        default: all
+        type: choice
+        options: [all, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2, 3.9.0]
+      arch:
+        description: 'Architecture, or "all"'
+        default: all
+        type: choice
+        options: [all, amd64, arm64]
 
 permissions:
   contents: read
@@ -24,8 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: [3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2, 3.9.0]
-        arch: [amd64, arm64]
+        version: ${{ fromJSON((inputs.version || 'all') == 'all' && '["3.3.5", "3.4.2", "3.5.2", "3.6.4", "3.7.2", "3.8.2", "3.9.0"]' || format('["{0}"]', inputs.version)) }}
+        arch: ${{ fromJSON((inputs.arch || 'all') == 'all' && '["amd64", "arm64"]' || format('["{0}"]', inputs.arch)) }}
     env:
       LJBT_SEEDS: ${{ github.event_name == 'schedule' && '200' || '50' }}
       LJBT_STOPS: ${{ github.event_name == 'schedule' && '500' || '100' }}

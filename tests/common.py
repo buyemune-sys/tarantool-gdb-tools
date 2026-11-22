@@ -147,8 +147,10 @@ def run_gdb(wd, script, args, timeout=230, core=None):
     return rc, out
 
 
+# $ljbt_arg (probe.py) reads the Lua number in both number modes: a plain
+# `->n` misses every integer of the dual-number arm64 build.
 BREAK_TARGETS = '''\
-break lbox_session_exists if ((TValue *)L->base)->n >= 4000
+break lbox_session_exists if $ljbt_arg(L, 0) >= 4000
 commands
 silent
 {tt}ljbt-probe {probe} {opts}

@@ -32,6 +32,34 @@ def probe_parse_bt(text):
     return res
 
 
+def probe_number(tv):
+    '''The Lua number in a TValue, whatever its representation: on arm64
+    LuaJIT is dual-number (lj_arch.h, LJ_NUMMODE_DUAL) and keeps an
+    integer as int32 with the LJ_TISNUM tag, `n` would read its bits as
+    a double.  The tag is checked on the bits (lj_obj.h: itype is
+    it64 >> 47 under GC64, the high word otherwise; LJ_TISNUM = ~13u),
+    not by the extension's LJ_DUALNUM guess.  No double has these bits:
+    LuaJIT canonicalizes NaNs.'''
+    u = int(tv['u64']) & 0xffffffffffffffff
+    tag = (u >> 47) if M.LJ_GC64 else (u >> 32)
+    if tag == ((~13) & (0x1ffff if M.LJ_GC64 else 0xffffffff)):
+        i = u & 0xffffffff
+        return i - (1 << 32) if i & 0x80000000 else i
+    return float(tv['n'])
+
+
+class ProbeNumberFunction(gdb.Function):
+    '''$ljbt_arg(L, n): the n-th argument of a Lua C function as a
+    number, for breakpoint conditions that must hold in both number
+    modes, e.g. `break lbox_session_exists if $ljbt_arg(L, 0) >= 4000`.'''
+
+    def __init__(self):
+        super(ProbeNumberFunction, self).__init__('ljbt_arg')
+
+    def invoke(self, L, n):
+        return probe_number(L['base'][int(n)])
+
+
 def probe_seq():
     '''Which stop this is: the scenario encodes it in the target's
     argument (box_space_id_by_name: len = 40 + seq; lbox_session_exists:
@@ -48,7 +76,7 @@ def probe_seq():
                 return int(f.read_var('len')) - 40
             if f.name() == 'lbox_session_exists':
                 L = f.read_var('L')
-                return int(float(L['base'][0]['n'])) - 4000
+                return int(probe_number(L['base'][0])) - 4000
         except (gdb.error, ValueError):
             pass
         f = f.older()
@@ -189,3 +217,4 @@ class ProbeTtCommand(gdb.Command):
 
 ProbeCommand()
 ProbeTtCommand()
+ProbeNumberFunction()
