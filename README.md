@@ -1,6 +1,6 @@
 # tarantool-gdb-tools
 
-gdb extensions for debugging Tarantool and its LuaJIT, live and on core dumps, on top of the extensions Tarantool and LuaJIT ship: `luajit_dbg.py` of LuaJIT (`lj-stack`, `lj-tv`, ...) and `tools/tarantool-gdb.py` of Tarantool (`info tt-fibers`, `tt-fiber`, ...). Each tool loads after them and reuses their helpers.
+gdb extensions for debugging Tarantool and its LuaJIT, live and on core dumps, on top of the extensions Tarantool and LuaJIT ship: `luajit_dbg.py` (`luajit-gdb.py` in older LuaJIT) of LuaJIT (`lj-stack`, `lj-tv`, ...) and `tools/tarantool-gdb.py` of Tarantool (`info tt-fibers`, `tt-fiber`, ...). Each tool loads after them and reuses their helpers.
 
 | Path | What |
 |---|---|
@@ -19,11 +19,13 @@ Tested on x86_64 with three builds: Tarantool 3.9.0 from the official static deb
 ### Usage
 
 ```
-(gdb) source <luajit-src>/src/luajit_dbg.py
+(gdb) source <luajit-src>/src/luajit_dbg.py     # luajit-gdb.py in Tarantool 3.3-3.5
 (gdb) source lj_bt.py
 (gdb) lj-bt [-v] [-n N] [--tail-chain] [--no-tail] [<lua_State *>]
 (gdb) lj-bt --all-fibers
 ```
+
+Load the extension of the LuaJIT the binary was built with: `src/luajit_dbg.py` of tarantool/luajit at the commit of Tarantool's `third_party/luajit`, which is `src/luajit-gdb.py` before LuaJIT 5db8c217 (Tarantool 3.3-3.5). `lj-bt` takes only the helpers both have; the bytecode and IR names it needs come from the DWARF of the binary.
 
 For fibers, load Tarantool's own extension after the process has started: `python import gdb.printing`, then `source <tarantool-src>/tools/tarantool-gdb.py`. After `tt-fiber <id>`, `lj-bt` prints the stack of that fiber.
 

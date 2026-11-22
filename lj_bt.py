@@ -1,14 +1,18 @@
 # lj_bt.py -- one stitched C + Lua backtrace for LuaJIT (Tarantool) in gdb.
 #
-#   (gdb) source <luajit>/src/luajit_dbg.py
+#   (gdb) source <luajit>/src/luajit_dbg.py   (luajit-gdb.py before 5db8c217)
 #   (gdb) source <tarantool>/tools/tarantool-gdb.py     (optional: fibers)
 #   (gdb) source lj_bt.py
 #   (gdb) lj-bt [-v] [-n N] [<lua_State *>]
 #   (gdb) lj-bt --all-fibers
 #
-# gdb `source` runs this file in the same __main__ namespace as
-# luajit_dbg.py, so every top-level name here is prefixed with
-# ljbt_/LJBT to avoid clobbering the helpers we reuse.
+# gdb `source` runs this file in the same __main__ namespace as the
+# LuaJIT extension, so every top-level name here is prefixed with
+# ljbt_/LJBT to avoid clobbering the helpers we reuse.  We take from it
+# only what luajit-gdb.py (Tarantool 3.3-3.5) and luajit_dbg.py (3.6+)
+# both have: mref, gcref, gcval, G, J, funcproto, frame_ftsz, typenames,
+# itypemap, vm_state, LJ_GC64, LJ_FR2.  Bytecode and IR names, which
+# differ between LuaJIT versions, come from the enums in DWARF.
 #
 # How the two stacks are matched (see lj_err.c:err_unwind, lj_frame.h):
 #  * Every entry into the VM from C (lj_vm_call/pcall/cpcall/resume,
@@ -44,8 +48,41 @@ except ImportError:
 
 import __main__ as ljbt_lj
 
-if not hasattr(ljbt_lj, 'frame_prevl') or not hasattr(ljbt_lj, 'dbg'):
-    raise gdb.GdbError('lj_bt.py: source luajit_dbg.py first')
+if not all(hasattr(ljbt_lj, n) for n in (
+        'frame_prevl', 'mref', 'gcref', 'gcval', 'funcproto', 'typenames',
+        'itypemap')):
+    raise gdb.GdbError('lj_bt.py: source luajit_dbg.py (or luajit-gdb.py '
+                       'of older LuaJIT) first')
+
+LJBT_TYPES = {}
+
+
+def ljbt_type(typestr):
+    '''gdb type by name; "T *" is a pointer to T (as the extensions do).'''
+    t = LJBT_TYPES.get(typestr)
+    if t is None:
+        m = re.match(r'((?:(?:struct|union) )?\S*)\s*[*]', typestr)
+        t = gdb.lookup_type(typestr) if m is None else \
+            gdb.lookup_type(m.group(1)).pointer()
+        LJBT_TYPES[typestr] = t
+    return t
+
+
+def ljbt_sizeof(typestr):
+    return ljbt_type(typestr).sizeof
+
+
+def ljbt_offsetof(typestr, field):
+    return ljbt_type(typestr)[field].bitpos // 8
+
+
+def ljbt_enum(example):
+    '''{name without prefix: value} of the enum the constant belongs to,
+    from DWARF: ljbt_enum('BC_CALL') is the BCOp enum (lj_bc.h).'''
+    pfx = example.split('_', 1)[0] + '_'
+    tp = gdb.parse_and_eval(example).type.strip_typedefs()
+    return dict((f.name[len(pfx):], int(f.enumval)) for f in tp.fields()
+                if f.name.startswith(pfx))
 
 
 # Layout. ########################################################
@@ -109,8 +146,23 @@ class LJBTConf(object):
         self.vm_end = self.sym.get('lj_vm_ffi_call')
         self.ffnames = ljbt_ffnames()
         self.G = ljbt_find_G()
-        self.proto_size = ljbt_lj.dbg.sizeof('GCproto')
-        self.str_size = ljbt_lj.dbg.sizeof('GCstr')
+        self.proto_size = ljbt_sizeof('GCproto')
+        self.str_size = ljbt_sizeof('GCstr')
+        # Bytecodes and IR ops of this very LuaJIT (lj_bc.h, lj_ir.h).
+        self.bc = ljbt_enum('BC_CALL')
+        self.bcname = dict((v, k) for k, v in self.bc.items())
+        self.ir = ljbt_enum('IR_KGC')
+        self.funcf_ops = set(self.bc[n] for n in ('FUNCF', 'IFUNCF',
+                                                  'JFUNCF') if n in self.bc)
+        self.bcmode = None      # lj_bc_mode[], read on first use.
+
+    def bcmode_a(self, op):
+        '''bcmode_a() of lj_bc.h: the mode of operand A.'''
+        if self.bcmode is None:
+            arr = gdb.parse_and_eval('lj_bc_mode')
+            self.bcmode = [int(arr[i]) for i in range(max(self.bc.values())
+                                                      + 1)]
+        return self.bcmode[op] & 7
 
 
 LJBT_STATE = {'conf': None, 'traces': None}
@@ -176,7 +228,24 @@ def ljbt_ref(addr):
 
 
 def ljbt_cast(typestr, addr):
-    return ljbt_lj.dbg.cast(typestr, addr)
+    return gdb.Value(addr).cast(ljbt_type(typestr))
+
+
+def ljbt_proto_kgc(pt, idx):
+    '''proto_kgc() of lj_obj.h: GC constant idx (< 0) of a GCproto.'''
+    return ljbt_lj.gcref(ljbt_lj.mref('GCRef *', pt['k'])[idx])
+
+
+def ljbt_ir_kgc(ins):
+    '''ir_kgc() of lj_ir.h: the object of a KGC instruction (GC64 keeps it
+    in the next IRIns).'''
+    ir = ljbt_cast('IRIns *', ins.address)
+    return ljbt_lj.gcref(ir[1 if ljbt_conf().gc64 else 0]['gcr'])
+
+
+def ljbt_ir_k64(ins):
+    '''The 64-bit payload of KNUM/KINT64 (ir_k64(): the next IRIns).'''
+    return ljbt_u64(int(ljbt_cast('IRIns *', ins.address)[1]['tv'].address))
 
 
 # cframes, lj_frame.h:279-295.
@@ -308,7 +377,7 @@ class LJBTProto(object):
 
     def kgc(self, d):
         '''GC constant #d as used by GGET/TGETS/FNEW (proto_kgc(pt, ~d)).'''
-        return int(ljbt_lj.proto_kgc(self.pt, ~d))
+        return int(ljbt_proto_kgc(self.pt, ~d))
 
     def has_pc(self, pc):
         return self.bc <= pc <= self.bc + 4 * self.sizebc
@@ -704,18 +773,17 @@ class LJBTTrace(object):
             func = None
             if sn & LJBT_SNAP_FRAME:
                 try:
-                    ins = ir[ref]
-                    if ljbt_lj.IRS[int(ins['o'])] == 'KGC':
-                        func = int(ljbt_lj.ir_kgc(ins))
-                except (gdb.error, IndexError):
+                    func = self.kgc(ref)
+                except gdb.error:
                     pass
             out.append((slot, func, link, bool(sn & LJBT_SNAP_CONT)))
         return pc, out
 
     def kgc(self, ref):
+        '''The function of a KGC instruction of the trace, else None.'''
         ins = self.T['ir'][ref]
-        if ljbt_lj.IRS[int(ins['o'])] == 'KGC':
-            return int(ljbt_lj.ir_kgc(ins))
+        if int(ins['o']) == ljbt_conf().ir['KGC']:
+            return int(ljbt_ir_kgc(ins))
         return None
 
     def frames_fr2(self, snapno):
@@ -752,9 +820,10 @@ class LJBTTrace(object):
             link = None
             try:
                 ins = T['ir'][sn & 0xffff]
-                if ljbt_lj.IRS[int(ins['o'])] in ('KNUM', 'KINT64'):
-                    link = ljbt_u64(int(ljbt_lj.ir_knum(ins)))
-            except (gdb.error, IndexError, AssertionError):
+                c = ljbt_conf()
+                if int(ins['o']) in (c.ir['KNUM'], c.ir.get('KINT64')):
+                    link = ljbt_ir_k64(ins)
+            except gdb.error:
                 pass
             func = None
             fsn = byslot.get(slot - 1)
@@ -827,7 +896,7 @@ if LJBT_HAVE_UNWINDER:
                 spv = pf.read_register(c.spreg)
                 sp = int(spv)
                 entry = c.sym.get('lj_BC_JLOOP')
-                if (t.startins & 0xff) in LJBT_FUNCF_OPS:
+                if (t.startins & 0xff) in c.funcf_ops:
                     entry = c.sym.get('lj_BC_JFUNCF', entry)
                 if not entry:
                     return None
@@ -839,16 +908,6 @@ if LJBT_HAVE_UNWINDER:
                 return ui
             except Exception:
                 return None
-
-
-def ljbt_bcop(name):
-    try:
-        return ljbt_lj.BYTECODES.index(name)
-    except (AttributeError, ValueError):
-        return -1
-
-
-LJBT_FUNCF_OPS = set(ljbt_bcop(n) for n in ('FUNCF', 'IFUNCF', 'JFUNCF'))
 
 
 # G, L and fibers. ###############################################
@@ -1051,9 +1110,13 @@ def ljbt_walk_cstack(skip0, limit):
 # below the call base), its value.  If that is another function than
 # the one running in the frame, frames were tail-called in between.
 
-LJBT_BC = dict((n, i) for i, n in enumerate(ljbt_lj.BYTECODES))
 LJBT_BCM_DST, LJBT_BCM_BASE = 1, 2      # BCMdst, BCMbase (lj_bc.h)
 LJBT_VARNAME_MAX = 7                    # VARNAME__MAX, lj_debug.h:62-67
+LJBT_GCROOT_MMNAME = 0                  # GCROOT_MMNAME, lj_obj.h; MM_index
+
+
+def ljbt_bc(name):
+    return ljbt_conf().bc[name]
 
 
 def ljbt_tv(addr):
@@ -1071,8 +1134,8 @@ def ljbt_tab_rawgetstr(taddr, saddr):
     t = ljbt_cast('GCtab *', taddr)
     hmask = int(t['hmask'])
     node = int(ljbt_lj.mref('Node *', t['node']))
-    nsz = ljbt_lj.dbg.sizeof('Node')
-    kofs = ljbt_lj.dbg.offsetof('Node', 'key')
+    nsz = ljbt_sizeof('Node')
+    kofs = ljbt_offsetof('Node', 'key')
     n = node + (int(ljbt_cast('GCstr *', saddr)['hash']) & hmask) * nsz
     for _ in range(hmask + 1):
         if ljbt_tv(n + kofs) == ('LJ_TSTR', saddr):
@@ -1086,7 +1149,7 @@ def ljbt_tab_rawgetstr(taddr, saddr):
 def ljbt_tab_getstr(taddr, saddr):
     '''t[s] following __index tables; None if an __index is a function.'''
     g = ljbt_cast('global_State *', ljbt_conf().G)
-    sindex = int(ljbt_lj.gcref(g['gcroot'][ljbt_lj.GCROOT_MMNAME + 0]))
+    sindex = int(ljbt_lj.gcref(g['gcroot'][LJBT_GCROOT_MMNAME]))
     for _ in range(16):
         v = ljbt_tab_rawgetstr(taddr, saddr)
         if v[0] != 'LJ_TNIL':
@@ -1186,9 +1249,9 @@ class LJBTSlotEval(object):
         while k > 0:
             ins = pt.ins(k)
             op, a = ins & 0xff, (ins >> 8) & 0xff
-            mode = ljbt_lj.bcmode_a(op)
+            mode = ljbt_conf().bcmode_a(op)
             if mode == LJBT_BCM_BASE:
-                if slot >= a and (op != LJBT_BC['KNIL'] or
+                if slot >= a and (op != ljbt_bc('KNIL') or
                                   slot <= ins >> 16):
                     return None     # Written by a call/vararg/... result.
             elif mode == LJBT_BCM_DST and a == slot:
@@ -1198,7 +1261,7 @@ class LJBTSlotEval(object):
 
     def define(self, k, ins, op, depth):
         pt = self.pt
-        name = ljbt_lj.BYTECODES[op]
+        name = ljbt_conf().bcname.get(op)
         b, c, d = ins >> 24, (ins >> 16) & 0xff, ins >> 16
         if name == 'MOV':
             return self.value(k, d, depth + 1)
@@ -1215,7 +1278,7 @@ class LJBTSlotEval(object):
             kind = 'field'
             if k > 1:
                 p = pt.ins(k - 1)
-                if p & 0xff == LJBT_BC['MOV'] and \
+                if p & 0xff == ljbt_bc('MOV') and \
                         (p >> 8) & 0xff == ((ins >> 8) & 0xff) + 1 + \
                         ljbt_conf().fr2 and p >> 16 == b:
                     kind = 'method'
@@ -1255,9 +1318,9 @@ def ljbt_callsite(link):
     pos = (calllink.pc() - pt.bc) // 4 - 1
     ins = pt.ins(pos)
     op, a = ins & 0xff, (ins >> 8) & 0xff
-    if op == LJBT_BC['ITERC']:
+    if op == ljbt_bc('ITERC'):
         return caller, pos, a - 3, a
-    if op not in (LJBT_BC['CALL'], LJBT_BC['CALLM']):
+    if op not in (ljbt_bc('CALL'), ljbt_bc('CALLM')):
         return None
     return caller, pos, a + extra, a
 
@@ -1321,7 +1384,7 @@ def ljbt_tail_callees(fn):
     ev = LJBTSlotEval(fn, None, 0)
     for pos in range(1, pt.sizebc):
         ins = pt.ins(pos)
-        if ins & 0xff not in (LJBT_BC['CALLT'], LJBT_BC['CALLMT']):
+        if ins & 0xff not in (ljbt_bc('CALLT'), ljbt_bc('CALLMT')):
             continue
         r = ev.value(pos, (ins >> 8) & 0xff)
         if r is None:
