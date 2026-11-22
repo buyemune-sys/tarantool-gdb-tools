@@ -31,7 +31,8 @@ class TailMixin(object):
         # schema setup (if_not_exists looks spaces up through it too).
         script = C.gdb_prelude() + (
             'break box_index_get\n'
-            'commands\nsilent\nljbt-probe {} --tail-chain\ncontinue\nend\n'
+            'commands\nsilent\nljbt-probe {} --tail-chain --text\n'
+            'continue\nend\n'
             'disable 1\n'
             'break lbox_session_id\n'
             'commands\nsilent\nenable 1\ncontinue\nend\n'
@@ -52,6 +53,26 @@ class TailMixin(object):
     def called(self, doc):
         return [h['called'] for h in heuristics(doc)]
 
+    def assert_called(self, rec, expected):
+        '''The heuristic lines are expected.  One exception, under JIT: if
+        the builtin get_ffi frame comes from a trace snapshot, the
+        space_mt.get -> get_ffi tail call may be compiled into the trace
+        after that snapshot; the frame slot then still holds space_mt.get,
+        which is what the call site says, and there is nothing to see
+        (README, known limitations).'''
+        doc = rec['ljbt']
+        allowed = [expected]
+        if self.get_ffi_from_snapshot(doc):
+            allowed.append([c for c in expected if c != "method 'get'"])
+        self.assertIn(self.called(doc), allowed, rec.get('text'))
+
+    def get_ffi_from_snapshot(self, doc):
+        return any(e['kind'] == 'lua' and
+                   (e.get('chunk') or '').endswith('schema.lua') and
+                   (e.get('inlined') or
+                    'base frame, snapshot' in (e.get('note') or ''))
+                   for e in C.entries(doc))
+
     def test_stops(self):
         self.assertEqual(len(self.recs), 4)
         for rec in self.recs:
@@ -59,10 +80,11 @@ class TailMixin(object):
 
     def test_positive_chain(self):
         doc = self.recs[0]['ljbt']
-        self.assertEqual(self.called(doc), ["method 'get'", "global 'lj_a'"])
+        self.assert_called(self.recs[0], ["method 'get'", "global 'lj_a'"])
         h = heuristics(doc)
-        self.assertTrue(h[0]['chunk'].endswith('schema.lua'))
-        self.assertEqual(h[1]['defline'], self.line_of('function _G.lj_a'))
+        if len(h) == 2:
+            self.assertTrue(h[0]['chunk'].endswith('schema.lua'))
+        self.assertEqual(h[-1]['defline'], self.line_of('function _G.lj_a'))
         # lj_c runs where lj_a was called from run().
         lua = [e for e in C.entries(doc) if e['kind'] == 'lua' and
                e['fkind'] == 'lua' and e['chunk'].endswith('tail.lua')]
@@ -75,9 +97,14 @@ class TailMixin(object):
     def test_tail_chain(self):
         doc = self.recs[0]['ljbt_chain']
         h = heuristics(doc)
+        chain = [("global 'lj_b'", True), ("global 'lj_a'", False)]
+        if self.get_ffi_from_snapshot(doc) and len(h) == 2:
+            self.assertEqual([(e['called'], e['probably']) for e in h],
+                             chain)     # See assert_called.
+            return
         self.assertEqual([(e['called'], e['probably']) for e in h],
-                         [("method 'get'", False), ("global 'lj_b'", True),
-                          ("global 'lj_a'", False)])
+                         [("method 'get'", False)] + chain,
+                         self.recs[0].get('text'))
         self.assertRegex(h[0]['text'], r"its CALLT: method 'get' "
                                        r"\(unresolved\)")
 
@@ -85,7 +112,7 @@ class TailMixin(object):
         # A plain call, a local computed in an expression, a call result:
         # only the space_mt.get line, which is a real tail call.
         for rec in self.recs[1:]:
-            self.assertEqual(self.called(rec['ljbt']), ["method 'get'"])
+            self.assert_called(rec, ["method 'get'"])
 
 
 class CrashMixin(object):
