@@ -23,7 +23,9 @@ import tempfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 LUA = os.path.join(TESTS, 'lua')
-LJ_BT = os.path.join(ROOT, 'lj_bt.py')
+# LJBT_LJ_BT runs the tests against another lj_bt.py, e.g. an older one,
+# to see a new test fail before its fix.
+LJ_BT = os.environ.get('LJBT_LJ_BT') or os.path.join(ROOT, 'lj_bt.py')
 PROBE = os.path.join(TESTS, 'probe.py')
 
 TARANTOOL = os.environ.get('LJBT_TARANTOOL')

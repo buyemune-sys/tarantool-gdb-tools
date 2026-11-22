@@ -8,7 +8,11 @@ local ffi = require('ffi')
 local H = {}
 local workdir = assert(os.getenv('LJBT_WORKDIR'), 'LJBT_WORKDIR is not set')
 
-ffi.cdef([[uint32_t box_space_id_by_name(const char *name, uint32_t len);]])
+ffi.cdef([[
+uint32_t box_space_id_by_name(const char *name, uint32_t len);
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *));
+]])
 
 -- Target names for the FFI target: NAMES[4000 + seq] has length 40 + seq
 -- (the breakpoint condition and the probe's sequence number), NAMES[2000]

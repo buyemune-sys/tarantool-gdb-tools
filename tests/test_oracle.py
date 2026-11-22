@@ -29,15 +29,28 @@ FIXED = [
     ['jit', 'call'],
     ['jit', 'tail', 'call'],
     ['call', 'resume', 'sort', 'fiber', 'pcall', 'tail'],
+    # 17, 18: FFI callbacks (a CONT frame with LJ_CONT_FFI_CALLBACK).
+    ['qsort', 'call'],
+    ['call', 'qsort', 'tail'],
+    # 19, 20: more FFI targets under JIT, so that some stops are surely in
+    # a trace (odd seqs get the FFI target).
+    ['jit', 'call', 'call'],
+    ['jit', 'pcall'],
 ]
+
+# Of the jit chains with an FFI target, at least this many must stop in
+# the machine code of a trace when the JIT is on.
+MIN_TRACE_STOPS = 2
 
 
 def fixed_program(jit, driver, first_seq=1):
     prog = gen.Program(jit == 'on', driver)
     chains = []
     for i, tr in enumerate(FIXED):
-        ch = gen.Chain(first_seq + i, tr, 'c' if i % 2 == 0 else 'ffi',
-                       oracle=True)
+        target = 'c' if i % 2 == 0 else 'ffi'
+        if tr[0] == 'jit' and i >= 18:
+            target = 'ffi'          # Called from the trace's machine code.
+        ch = gen.Chain(first_seq + i, tr, target, oracle=True)
         prog.add(ch)
         chains.append(ch)
     return prog, chains
@@ -61,6 +74,23 @@ class OracleMixin(object):
     def test_chains_ran(self):
         self.assertEqual(self.failures, [])
         self.assertNotIn('<timeout>', self.out)
+
+    def test_trace_stops(self):
+        # The JIT part is not vacuous: stops really are in traces.
+        if self.jit != 'on':
+            self.skipTest('JIT is off')
+        n = sum(1 for recs in self.stops.values() for r in recs
+                if r.get('ljbt') and any(f['kind'] == 'trace'
+                                         for f in r['ljbt']['frames']))
+        self.assertGreaterEqual(n, MIN_TRACE_STOPS)
+
+    def test_ffi_callback(self):
+        # The callback's frame is a C frame of its own cframe
+        # (LJ_CONT_FFI_CALLBACK): the model holds only if the split knows.
+        for seq in (17, 18):
+            doc = self.stops[seq][0]['ljbt']
+            how = [h for e in C.entries(doc) for h in e.get('how') or []]
+            self.assertIn('FFI callback', how, seq)
 
     def test_chains(self):
         for ch in self.chains:

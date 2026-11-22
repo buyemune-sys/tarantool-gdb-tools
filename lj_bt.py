@@ -123,6 +123,8 @@ LJBT_CFRAME_RESUME = 1          # lj_frame.h:275
 LJBT_CFRAME_RAWMASK = ~3        # lj_frame.h:277
 LJBT_GCT_THREAD = 6             # gct = ~LJ_TTHREAD, lj_obj.h
 LJBT_GCT_FUNC = 8               # ~LJ_TFUNC
+LJBT_CONT_TAILCALL = 0          # LJ_CONT_TAILCALL, lj_frame.h:87
+LJBT_CONT_FFI_CALLBACK = 1      # LJ_CONT_FFI_CALLBACK
 LJBT_SNAP_FRAME = 0x010000      # lj_jit.h:201
 LJBT_SNAP_CONT = 0x020000
 
@@ -509,6 +511,21 @@ class LJBTLink(object):
                                           ((ins >> 8) & 0xff))
         return self.addr - (self.ftsz & ~7)
 
+    def contv(self):
+        '''frame_contv() of a CONT link (lj_frame.h:90-94): FR2 keeps a
+        64-bit value three slots down, the 32-bit layout the low word of
+        the slot below.  LJ_CONT_TAILCALL (0), LJ_CONT_FFI_CALLBACK (1),
+        else the continuation: an address under FR2 (frame_contf), an
+        offset from lj_vm_asm_begin otherwise.'''
+        if ljbt_conf().fr2:
+            return ljbt_u64(self.addr - 3 * LJBT_TV)
+        return ljbt_i32(self.addr - LJBT_TV)
+
+    def contf(self):
+        v = self.contv()
+        c = ljbt_conf()
+        return v if c.fr2 else (c.vm_begin + v if c.vm_begin else None)
+
     def contpc(self):
         return ljbt_ref(self.addr - LJBT_TV * (1 + ljbt_conf().fr2) +
                         (4 if not ljbt_conf().gc64 else 0))
@@ -657,10 +674,10 @@ class LJBTState(object):
             elif t == LJBT_FT_CP:
                 closes = True
             elif t == LJBT_FT_CONT:
-                # FFI callback continuation is a C frame, lj_err.c:197.
+                # An FFI callback continuation is a C frame
+                # (lj_err.c:167-169, frame_iscont_fficb), FR2 or not.
                 try:
-                    if ljbt_conf().fr2 == 0 and ljbt_u32(
-                            frame - LJBT_TV) == 1:
+                    if link.contv() == LJBT_CONT_FFI_CALLBACK:
                         closes = True
                 except gdb.error:
                     pass
@@ -1593,19 +1610,17 @@ def ljbt_warn(text):
 
 
 def ljbt_cont_kind(link):
-    '''What a continuation frame is (lj_frame.h:87-106, non-FR2 x64).'''
-    c = ljbt_conf()
-    if c.fr2:
-        return 'continuation'
+    '''What a continuation frame is (lj_frame.h:87-106).'''
     try:
-        contv = ljbt_i32(link.addr - LJBT_TV)
+        contv = link.contv()
+        addr = link.contf()
     except gdb.error:
         return 'continuation'
-    if contv == 0:
+    if contv == LJBT_CONT_TAILCALL:
         return 'LJ_CONT_TAILCALL: tail call from C (lj_meta.c:lj_meta_tailcall)'
-    if contv == 1:
+    if contv == LJBT_CONT_FFI_CALLBACK:
         return 'FFI callback'
-    name = ljbt_symname(c.vm_begin + contv) if c.vm_begin else None
+    name = ljbt_symname(addr) if addr else None
     if name == 'lj_cont_stitch':
         return 'called from a trace, stitched (lj_cont_stitch)'
     return 'metamethod, continuation {}'.format(name or hex(contv))
