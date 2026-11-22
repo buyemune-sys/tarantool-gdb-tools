@@ -292,22 +292,26 @@ class RustRun(object):
         self.assertEqual(self.failures, [])
         self.assertEqual([r for r in self.recs if r['error']], [])
 
-    # Stops whose lj-bt output is known to be wrong (an expectedFailure
-    # test): their cores are checked apart, by test_core_broken.
-    core_broken = ()
+    # Stops whose cores a test of their own checks (a core is checked
+    # once: check_core removes it).
+    core_apart = ()
 
     def test_core(self):
         self.check_cores([t for t in self.tags() if t not in
-                          self.core_broken])
+                          self.core_apart])
 
     def check_cores(self, tags):
+        '''check_core of the cores of these tags; {tag: the record of the
+        core}.'''
         if not self.cores:
             self.skipTest('no core files in this run')
         live = [r for r in self.recs if r.get('core') and r['tag'] in tags]
         self.assertTrue(live, 'no core files written')
+        dead = {}
         for rec in live:
             with self.subTest(tag=rec['tag'], seq=rec['seq']):
-                self.check_core(rec)
+                dead[rec['tag']] = self.check_core(rec)
+        return dead
 
     def tags(self):
         return sorted(set(r['tag'] for r in self.recs))
@@ -371,6 +375,7 @@ class RustRun(object):
             theirs = [(x['fiber'], x['bt'] and core_shape(x['bt']))
                       for x in live['all_fibers']]
             self.assertEqual(mine, theirs)
+        return dead[live['tag']]
 
 
 # The plain module. ##############################################
@@ -547,33 +552,32 @@ class PlainMixin(RustRun):
 
 class RustFrameStopMixin(object):
     '''Builds with DWARF: at a stop in a Rust function frame #0 has the
-    language rust.'''
+    language rust, and gdb parses expressions and looks types up in it.
+    What lj-bt evaluates is C: the addresses of the VM symbols
+    ('(unsigned long)&lj_vm_asm_begin', without them no vm_begin, vm_end
+    and lj_BC_JLOOP: JIT on, the trace unwinder gave up and the frames
+    behind the trace were garbage; JIT off, lj_vm_ffi_call was taken for
+    VM code), lj_bc_mode, the types of the LuaJIT extension ("void" is
+    no type in Rust).  lj-bt evaluates in C and gives the language
+    back.'''
 
-    @unittest.expectedFailure
     def test_ffi_entry(self):
-        # lj-bt reads the addresses of the VM symbols with
-        # gdb.parse_and_eval('(unsigned long)&lj_vm_asm_begin') (LJBTConf
-        # .__init__) in the current language: in a Rust frame gdb parses it
-        # as Rust and fails, LJBTConf.sym stays empty, there are no
-        # vm_begin, vm_end and lj_BC_JLOOP.  JIT on: the trace unwinder
-        # gives up, the frames behind the trace are garbage.  JIT off:
-        # lj_vm_ffi_call (the end of the VM code, vm_end) is taken for VM
-        # code, "!! VM code, but sp=... is not a cframe".
         PlainMixin.test_ffi_entry(self)
+        rec = self.stop('ffi-entry')
+        self.assertEqual(rec['language'], ['auto', 'rust'])
+        self.assertEqual(rec['language_after'], rec['language'])
+        self.assertEqual(rec['language_error'], rec['language'])
 
-    core_broken = ('ffi-entry',)
+    core_apart = ('ffi-entry',)
 
-    @unittest.expectedFailure
-    def test_core_broken(self):
+    def test_core_rust_frame(self):
         # The same stop on its core, where the first lj-bt of the session
-        # runs in the Rust frame: more of what lj-bt evaluates fails there,
-        # before the type caches are filled: gdb.lookup_type('void') of
-        # mref('void *', ...) in LJBTProto ("No type named void" in Rust),
-        # gdb.parse_and_eval('lj_bc_mode') of LJBTConf.bcmode_a ("No symbol
-        # in current context"); the trace start is "?", a frame link
-        # "broken".  Live, the stops before it filled the caches in C
-        # frames.  Evaluating LJBTConf alone in C does not fix this one.
-        self.check_cores(self.core_broken)
+        # runs in the Rust frame, before any type cache is filled (live,
+        # the stops before it filled them in C frames): mref('void *', ...)
+        # of LJBTProto, lj_bc_mode of LJBTConf.bcmode_a.
+        for d in self.check_cores(self.core_apart).values():
+            self.assertEqual(d['language'], ['auto', 'rust'])
+            self.assertEqual(d['language_after'], ['auto', 'rust'])
 
 
 class TestRustPlainDebug(RustFrameStopMixin, PlainMixin, unittest.TestCase):

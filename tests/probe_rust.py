@@ -14,6 +14,9 @@
 #   bt_probe the frames as probe.py parsed them
 #   solibs   {pc: shared library or null} of the lj-bt frames
 #   core     with --gcore, the core file `gcore` wrote into DIR
+#   language [the language setting, the current language] before
+#            ljbt-probe; language_after, the same after it, and
+#            language_error after an `lj-bt` that fails (bad flags)
 #
 #   ljbt-rust-fibers FILE RESULTS
 #
@@ -58,6 +61,12 @@ def rust_parse_bt(text):
     return res
 
 
+def rust_language():
+    '''[`show language` setting, the language gdb uses now].'''
+    cur = getattr(gdb, 'current_language', None)
+    return [gdb.parameter('language'), cur() if cur else None]
+
+
 def rust_reset_fiber():
     FU = getattr(M, 'FiberUnwinder', None)
     if FU is not None:
@@ -94,11 +103,18 @@ class RustProbeCommand(gdb.Command):
         try:
             if fiber is not None:
                 gdb.execute('tt-fiber {}'.format(fiber), False, True)
+            lang = rust_language()
             gdb.execute('ljbt-probe {} {}'.format(one, ' '.join(rest)),
                         False, True)
             with open(one) as fh:
                 rec = json.loads(fh.read().splitlines()[-1])
             os.unlink(one)
+            rec['language'], rec['language_after'] = lang, rust_language()
+            try:
+                gdb.execute('lj-bt -n none', False, True)
+            except gdb.error:
+                pass
+            rec['language_error'] = rust_language()
             try:
                 text = gdb.execute('bt -no-filters', False, True)
             except gdb.error:

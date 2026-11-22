@@ -34,6 +34,7 @@
 #    inlined Lua frames come from the snapshot covering the pc
 #    (lj_trace.c:lj_trace_unwind, lj_snap.c:lj_snap_restore).
 
+import functools
 import json
 import re
 import struct
@@ -58,6 +59,59 @@ if not all(hasattr(ljbt_lj, n) for n in LJBT_NEEDED):
                            n for n in LJBT_NEEDED
                            if not hasattr(ljbt_lj, n))))
 
+def ljbt_lang_is_c():
+    try:
+        return gdb.current_language() == 'c'
+    except (AttributeError, gdb.error):     # gdb < 12: no way to tell.
+        return False
+
+
+class LJBTLangC(object):
+    '''with LJBTLangC(): gdb parses expressions and looks types up in the
+    current language, which follows the selected frame: in a Rust frame
+    "(unsigned long)&lj_vm_asm_begin" does not parse, "void" is no type
+    and "char" is the 4-byte char of Rust.  The block runs with the
+    language C and gives the previous setting back ("auto" too) on the
+    way out, on an exception as well.  Nested blocks switch nothing.'''
+    depth = 0
+    prev = None
+
+    def __enter__(self):
+        cls = LJBTLangC
+        if cls.depth == 0 and not ljbt_lang_is_c():
+            prev = gdb.parameter('language')
+            gdb.execute('set language c', False, True)
+            cls.prev = prev
+        cls.depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        cls = LJBTLangC
+        cls.depth -= 1
+        if cls.depth == 0 and cls.prev is not None:
+            prev, cls.prev = cls.prev, None
+            try:
+                gdb.execute('set language ' + prev, False, True)
+            except gdb.error:
+                pass
+        return False
+
+
+def ljbt_in_c(fn):
+    '''Decorator: fn runs in a LJBTLangC block.'''
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with LJBTLangC():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def ljbt_eval(expr):
+    '''gdb.parse_and_eval of a C expression, whatever the frame.'''
+    with LJBTLangC():
+        return gdb.parse_and_eval(expr)
+
+
 LJBT_TYPES = {}
 
 
@@ -66,8 +120,9 @@ def ljbt_type(typestr):
     t = LJBT_TYPES.get(typestr)
     if t is None:
         m = re.match(r'((?:(?:struct|union) )?\S*)\s*[*]', typestr)
-        t = gdb.lookup_type(typestr) if m is None else \
-            gdb.lookup_type(m.group(1)).pointer()
+        with LJBTLangC():
+            t = gdb.lookup_type(typestr) if m is None else \
+                gdb.lookup_type(m.group(1)).pointer()
         LJBT_TYPES[typestr] = t
     return t
 
@@ -84,7 +139,7 @@ def ljbt_enum(example):
     '''{name without prefix: value} of the enum the constant belongs to,
     from DWARF: ljbt_enum('BC_CALL') is the BCOp enum (lj_bc.h).'''
     pfx = example.split('_', 1)[0] + '_'
-    tp = gdb.parse_and_eval(example).type.strip_typedefs()
+    tp = ljbt_eval(example).type.strip_typedefs()
     return dict((f.name[len(pfx):], int(f.enumval)) for f in tp.fields()
                 if f.name.startswith(pfx))
 
@@ -154,6 +209,7 @@ LJBT_FT_NAMES = {0: 'L', 1: 'C', 2: 'M', 3: 'V', 4: 'LP', 5: 'CP',
 class LJBTConf(object):
     '''Build-dependent constants, resolved once per stop.'''
 
+    @ljbt_in_c
     def __init__(self):
         if ljbt_lj.LJ_GC64 is None or ljbt_lj.LJ_FR2 is None:
             # The extension postpones its setup until libluajit symbols
@@ -182,8 +238,7 @@ class LJBTConf(object):
         for name in ('lj_vm_asm_begin', 'lj_vm_ffi_call', 'lj_BC_JLOOP',
                      'lj_BC_JFUNCF', 'lj_BC_FUNCC'):
             try:
-                self.sym[name] = int(gdb.parse_and_eval(
-                    '(unsigned long)&' + name))
+                self.sym[name] = int(ljbt_eval('(unsigned long)&' + name))
             except gdb.error:
                 pass
         self.vm_begin = self.sym.get('lj_vm_asm_begin')
@@ -204,7 +259,7 @@ class LJBTConf(object):
     def bcmode_a(self, op):
         '''bcmode_a() of lj_bc.h: the mode of operand A.'''
         if self.bcmode is None:
-            arr = gdb.parse_and_eval('lj_bc_mode')
+            arr = ljbt_eval('lj_bc_mode')
             self.bcmode = [int(arr[i]) for i in range(max(self.bc.values())
                                                       + 1)]
         return self.bcmode[op] & 7
@@ -248,6 +303,7 @@ def ljbt_running_fiber():
         return None
 
 
+@ljbt_in_c
 def ljbt_on_stop(event):
     ljbt_reset()
     # tarantool-gdb.py keeps the fiber picked by `tt-fiber` (or the one
@@ -375,7 +431,7 @@ def ljbt_ffnames():
     '''ffid -> builtin name, from the FF_* enum (lj_ffdef.h via DWARF).'''
     names = {}
     try:
-        tp = gdb.parse_and_eval('FF_pcall').type.strip_typedefs()
+        tp = ljbt_eval('FF_pcall').type.strip_typedefs()
         for fld in tp.fields():
             n = fld.name[3:] if fld.name.startswith('FF_') else fld.name
             for pfx, repl in LJBT_LIBPFX:
@@ -818,6 +874,7 @@ class LJBTTrace(object):
         self.root = int(T['root'])
         self.startins = int(T['startins'])
 
+    @ljbt_in_c                  # Also called late, by the frame decorator.
     def start(self):
         try:
             pt = LJBTProto(int(ljbt_lj.gcref(self.T['startpt'])))
@@ -941,6 +998,11 @@ class LJBTTrace(object):
 def ljbt_traces():
     if LJBT_STATE['traces'] is not None:
         return LJBT_STATE['traces']
+    with LJBTLangC():           # The unwinder may be the first to ask.
+        return ljbt_read_traces()
+
+
+def ljbt_read_traces():
     res = []
     LJBT_STATE['traces'] = res
     c = ljbt_conf()
@@ -1057,7 +1119,7 @@ def ljbt_sysprof_running():
     if sym is None:
         return False
     try:
-        prof = int(gdb.parse_and_eval('SPS_PROFILE'))
+        prof = int(ljbt_eval('SPS_PROFILE'))
     except gdb.error:
         prof = 1                # lj_sysprof.c: enum { SPS_IDLE, SPS_PROFILE
     try:
@@ -2139,6 +2201,7 @@ def ljbt_default_L(arg_L):
     return defL, hdr, other_fiber
 
 
+@ljbt_in_c
 def ljbt_backtrace(arg_L, limit, out, as_json=False):
     defL, hdr, other_fiber = ljbt_default_L(arg_L)
     gdb.invalidate_cached_frames()
@@ -2276,6 +2339,7 @@ With -v the frames whose callee cannot be verified say so.
     def __init__(self):
         super(LJBTCommand, self).__init__('lj-bt', gdb.COMMAND_STACK)
 
+    @ljbt_in_c
     def invoke(self, arg, from_tty):
         argv = gdb.string_to_argv(arg)
         limit = 256
@@ -2317,7 +2381,7 @@ With -v the frames whose callee cannot be verified say so.
                 rest.append(a)
             i += 1
         ljbt_reset()
-        arg_L = int(gdb.parse_and_eval(' '.join(rest))) if rest else None
+        arg_L = int(ljbt_eval(' '.join(rest))) if rest else None
         out = []
         if allf:
             self.all_fibers(limit, out, as_json)
@@ -2433,6 +2497,7 @@ if LJBTFrameDecorator is not None:
             self.enabled = True
             gdb.frame_filters[self.name] = self
 
+        @ljbt_in_c
         def filter(self, frame_iter):
             decos = []
             truncated = False
