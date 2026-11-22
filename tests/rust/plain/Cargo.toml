@@ -1,0 +1,38 @@
+# The Rust module of the `rust` group (tests/test_rust.py) that needs no
+# crates: a workspace of its own, so cargo never needs the crates.io
+# index for it and it builds offline.  tests/rust/build.sh builds it with
+# four profiles:
+#
+#   ljbt-debug   release with full debuginfo: gdb has the Rust frames with
+#                names, lines and inlined frames
+#   release      no debuginfo (cargo strips it), the symbols are kept
+#   ljbt-strip   no symbols at all (strip = true): the Rust frames are
+#                `??`, only the exported luaopen_*/FFI functions keep a
+#                name (.dynsym)
+#   ljbt-abort   panic = "abort", debuginfo: a Lua error that unwinds into
+#                the Rust frames aborts the process
+[package]
+name = "ljbt_plain"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+description = "lj-bt tests: a Lua C module on the bare Lua C API"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[profile.ljbt-debug]
+inherits = "release"
+debug = true
+
+[profile.ljbt-strip]
+inherits = "release"
+strip = true
+
+[profile.ljbt-abort]
+inherits = "release"
+debug = true
+panic = "abort"

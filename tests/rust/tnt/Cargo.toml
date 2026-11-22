@@ -1,0 +1,29 @@
+# The Rust module of the `rust` group (tests/test_rust.py) on the
+# `tarantool` crate: tlua calls into Lua, fibers created from Rust, a
+# stored procedure.  A workspace of its own (see ../plain); built by
+# tests/rust/build.sh with the profile ljbt-debug (release with full
+# debuginfo).
+[package]
+name = "ljbt_tnt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+description = "lj-bt tests: a module on the tarantool crate"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No net_box, no openssl: tlua, fibers and stored procedures only.
+tarantool = { version = "=11.0.0", default-features = false }
+
+[workspace]
+
+[profile.ljbt-debug]
+inherits = "release"
+debug = true
+
+# The crates: names, lines and inlined frames only (a third of the size).
+[profile.ljbt-debug.package."*"]
+debug = "line-tables-only"
