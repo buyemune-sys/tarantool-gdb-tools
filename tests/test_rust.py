@@ -620,15 +620,17 @@ class TestRustPlainStrip(PlainMixin, unittest.TestCase):
         doc = self.stop('target', 1)['ljbt']
         self.assertEqual(len(unfolded_c(doc)), 2)
 
-    @unittest.expectedFailure
     def test_unnamed_frame_note(self):
-        # The note on the unfolded functions says "no C frame of None
-        # right above this VM frame: a tail call in C?", though the C frame
-        # right above is there, only nameless (ljbt_stitch formats the
-        # name None of ljbt_symname).
+        # The note on the unfolded functions: the C frame right above is
+        # there, only nameless like the function, no tail call (it said
+        # "no C frame of None right above this VM frame: a tail call in
+        # C?", the name None of ljbt_symname).
         doc = self.stop('target', 1)['ljbt']
         info = [i for f in doc['frames'] for i in f['info']]
         self.assertEqual([i for i in info if 'None' in i], [])
+        self.assertEqual([i for i in info if 'tail call in C' in i], [])
+        self.assertEqual(len([i for i in info if 'have no names: not '
+                              'matched' in i]), len(unfolded_c(doc)))
 
 
 class TestRustPlainAbort(PlainMixin, unittest.TestCase):

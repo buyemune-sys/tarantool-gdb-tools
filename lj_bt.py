@@ -1965,18 +1965,26 @@ def ljbt_stitch(cframes, defL, out, truncated=False):
                 target = pf
                 break
             fname = ljbt_symname(fn.f)
+            fdesc = fname or '0x{:x}'.format(fn.f)
             if target is not None and fname and target.name == fname:
                 fold = target
             elif fn.kind == 'c' and (i == 0 or cframes[i - 1].kind == 'sig'):
                 # Stopped in the VM right around the call.
                 cfr.lua.append(ljbt_warn(
                     'no C frame of {} above this VM frame: the call is in '
-                    'progress'.format(fname)))
+                    'progress'.format(fdesc)))
+            elif fn.kind == 'c' and fname is None and target is not None \
+                    and target.name is None:
+                # A stripped module: nothing to match the two by.
+                cfr.lua.append(ljbt_info(
+                    'C function {} and the C frame #{} right above this VM '
+                    'frame have no names: not matched'.format(
+                        fdesc, target.level)))
             elif fn.kind == 'c':
                 # C frames above, but not this one: it tail-called (jmp).
-                cfr.lua.append({'kind': 'info', 'text':
-                                '-- no C frame of {} right above this VM '
-                                'frame: a tail call in C?'.format(fname)})
+                cfr.lua.append(ljbt_info(
+                    'no C frame of {} right above this VM frame: a tail '
+                    'call in C?'.format(fdesc)))
         lines = []
         ljbt_render_links(seg, top_pc, lines)
         if fold:
