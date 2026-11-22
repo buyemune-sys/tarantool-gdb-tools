@@ -8,13 +8,13 @@ gdb extensions for debugging Tarantool and its LuaJIT, live and on core dumps, o
 | `examples/` | scenarios and gdb scripts to try the tools on |
 | `tests/` | automated tests, run against a Tarantool build with DWARF |
 
-Status: prototypes. Everything needs DWARF in the Tarantool binary, as `luajit_dbg.py` does: official packages without debug info are not enough.
+Status: prototypes. Everything needs DWARF in the Tarantool binary, as `luajit_dbg.py` does. The static deb of Tarantool's package repository carries it; the stripped static rpm that `tt binary install` puts does not, but the deb binary of the same version has the same build-id and serves as its symbol file (`symbol-file` or `file` in gdb, also for a core of the rpm build).
 
 ## lj-bt
 
 `lj-bt` prints the C frames and the Lua frames of a Tarantool process in the real order of the calls. Plain `bt` shows only the C stack, and `lj-stack` shows only the Lua stack of one coroutine; matching them by eye is what this replaces. Loading it also installs a frame filter, so plain `bt` prints the stitched stack, and an unwinder, so `bt` goes through JIT traces.
 
-Tested on x86_64 with Tarantool 3.10.0-entrypoint built from source with DWARF, LuaJIT 8af934d9 (the one of Tarantool 3.9.0).
+Tested on x86_64 with three builds: Tarantool 3.9.0 from the official static deb (GC64, DWARF), and Tarantool master built from source with DWARF, with and without GC64, both with LuaJIT 8af934d9, the one of 3.9.0.
 
 ### Usage
 
@@ -87,12 +87,39 @@ The sysprof crash (tarantool/tarantool#11184): a sample taken after an `on_repla
 
 ### Known limitations
 
-- GC64 (FR2), which official builds use, is being tested now; until then, trace snapshots are not decoded under FR2, and BASE/PC are read from registers on x64 without GC64 only.
-- In a trace, the line is that of the last snapshot before the pc and may lag a line behind.
+- In a trace, the frames are those of the last snapshot before the pc: the line may lag a line behind, a fresh inlined frame may be missing, and the function may be one that later tail-called further.
+- Only x86_64 is tested; the layouts for arm64 are transcribed from `lj_frame.h` and never run.
 - Lua tail calls are recovered by the heuristic above only; a tail call into C shows as a missing C frame.
 - gdb's inline frames of `-O2` C code are printed as `[inlined]` and not otherwise examined.
 - `tarantool_L` is shared by several fibers whose cframes lie on different C stacks; without `tarantool-gdb.py` such frames are marked, not attributed to a fiber.
 - Not tried: ffi callbacks, hooks, the error handler of `xpcall`, `lua_cpcall` without a frame.
+
+### Machine-readable output
+
+`lj-bt --json [-o FILE]` prints the same backtrace as one JSON document: the frames with their Lua entries, the C function folded into each, the `!!` mismatches and the `--` notes, and per `lua_State` how many frame links were walked and hidden. The tests compare it rather than the text.
+
+## Tests
+
+`tests/run.sh [GROUP...]` runs the tests of `lj-bt` against a Tarantool build with DWARF:
+
+| Group | What |
+|---|---|
+| `oracle` | fixed chains: the Lua frames must match what the scenario recorded with `debug.getinfo` right before the call, the C frames must match `bt -no-filters`, every frame link appears once, and there is no `!!` |
+| `random` | chains generated from a seed out of 14 kinds of steps (call, tail call, pcall, xpcall, coroutine resume and wrap, `table.sort` comparator, `gsub` callback, `__index`, `__call`, `__add`, another fiber, a hot loop under JIT, an error with an `xpcall` handler), checked against the generator's model |
+| `stops` | stops at random points of the VM - `SIGPROF` of sysprof in mode D, which walks no stack - on a mixed load: no Python error, the C frames kept, the outer frames found, every mismatch marked |
+| `core` | the same chains on `gcore` files, with no live process: the output matches the live one |
+| `tail` | the table of the tail call heuristic, positive and negative cases |
+| `crash` | the sysprof crashes in mode C (tarantool/tarantool#11184): no Python error, `!!` with the shift of `top_frame`, the right Lua frame (long and racy) |
+| `all` | everything; the default is all but `crash` |
+
+```
+LJBT_TARANTOOL=<tarantool with DWARF> \
+LJBT_LUAJIT_DBG=<luajit-src>/src/luajit_dbg.py \
+LJBT_TT_GDB=<tarantool-src>/tools/tarantool-gdb.py \
+LJBT_SEEDS=200 LJBT_STOPS=500 tests/run.sh all
+```
+
+`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only.
 
 ## License
 
