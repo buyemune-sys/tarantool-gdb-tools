@@ -664,8 +664,10 @@ class TestRustPlainAbort(PlainMixin, unittest.TestCase):
         rust = shape(rec, self.module)
         self.assertEqual(rust[-3:], [self.R('invoke'), self.R('l_call'),
                                      ('vm', [DEF['err']] + bottom('error'))])
-        # gdb unwinds through the Rust frames to the bottom of the stack.
-        self.assertEqual(names[-1], 'coro_init')
+        # gdb unwinds through the Rust frames to the bottom of the fiber
+        # stack: coro_init on x86_64, coro_startup on aarch64 (libcoro's
+        # entry differs by arch, see LJBT_STACK_BOTTOMS in lj_bt.py).
+        self.assertIn(names[-1], ('coro_init', 'coro_startup'))
 
     test_ffi_from_rust = test_ffi_entry = test_rec = test_rec_counts = None
 
