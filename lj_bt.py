@@ -287,7 +287,9 @@ class LJBTConf(object):
         return self.bcmode[op] & 7
 
 
-LJBT_STATE = {'conf': None, 'traces': None, 'fiber': None}
+# conf, traces, owners: the state of the thread conf.thread; failed: the
+# threads whose conf could not be built since the last reset.
+LJBT_STATE = {'conf': None, 'traces': None, 'fiber': None, 'failed': {}}
 
 
 def ljbt_thread_key():
@@ -302,19 +304,33 @@ def ljbt_thread_key():
 
 
 def ljbt_conf():
+    key = ljbt_thread_key()
     c = LJBT_STATE['conf']
-    if c is not None and c.thread != ljbt_thread_key():
-        ljbt_reset()                # `thread N` since the stop.
+    if c is not None and c.thread != key:
+        ljbt_drop()                 # `thread N` since the stop.
         c = None
     if c is None:
-        c = LJBT_STATE['conf'] = LJBTConf()
+        try:
+            c = LJBTConf()
+        except Exception:
+            LJBT_STATE['failed'][key] = True
+            raise
+        LJBT_STATE['conf'] = c
+        LJBT_STATE['failed'].pop(key, None)
     return c
 
 
-def ljbt_reset(event=None):
+def ljbt_drop():
+    '''Forget the state of the thread it was built for.'''
     LJBT_STATE['conf'] = None
     LJBT_STATE['traces'] = None
     LJBT_STATE['owners'] = None
+
+
+def ljbt_reset(event=None):
+    '''A stop, a new objfile, an exit: what was read may be stale.'''
+    ljbt_drop()
+    LJBT_STATE['failed'] = {}
 
 
 def ljbt_running_fiber():
@@ -1069,8 +1085,34 @@ if LJBT_HAVE_UNWINDER:
         def __init__(self):
             super(LJBTTraceUnwinder, self).__init__('lj-bt-trace')
 
-        def __call__(self, pf):
+        busy = False
+
+        @staticmethod
+        def conf():
+            '''The conf of the thread being unwound.  Built here when no
+            stop event built it (a core file just opened: the first `bt`
+            unwinds before the frame filter runs) or it is of another
+            thread (`thread N`: in 3.7+ a thread without Lua has no G).
+            Not again for a thread where it failed since the last reset:
+            gdb asks the unwinder thousands of times between two stops.
+            The build reads globals and TLS, no frames, but guard against
+            reentry.'''
             c = LJBT_STATE['conf']
+            key = ljbt_thread_key()
+            if c is not None and c.thread == key:
+                return c
+            if LJBTTraceUnwinder.busy or key in LJBT_STATE['failed']:
+                return None
+            LJBTTraceUnwinder.busy = True
+            try:
+                return ljbt_conf()
+            except Exception:
+                return None
+            finally:
+                LJBTTraceUnwinder.busy = False
+
+        def __call__(self, pf):
+            c = self.conf()
             if c is None or not c.G:
                 return None
             try:

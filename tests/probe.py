@@ -1,12 +1,14 @@
 # gdb side of the lj-bt tests: sourced after luajit_dbg.py and lj_bt.py.
 #
-#   ljbt-probe FILE [--filter] [--core]
+#   ljbt-probe FILE [--filter] [--core] [--thread-hop SEQS]
 #
 # appends one JSON line to FILE: the `lj-bt --json` document, the frames
 # of `bt -no-filters` (and without the trace unwinder, if a trace frame
 # is there), the number of lj-stack frames of every lua_State lj-bt saw,
 # the stop's sequence number (from the breakpoint's arguments) and any
-# Python exception of lj-bt.
+# Python exception of lj-bt.  --thread-hop: at the stops of these
+# sequence numbers, also `thread N` to another thread, `bt` there, back,
+# then `bt` and `lj-bt` (thread_hop).
 
 import json
 import re
@@ -101,6 +103,26 @@ def probe_ljstack(L):
         return None
 
 
+def probe_thread_hop():
+    '''`thread N` to another thread and `bt` there (the frame filter
+    builds the state of that thread), back, then what `bt` and lj-bt
+    show.'''
+    orig = gdb.selected_thread()
+    other = [t for t in gdb.selected_inferior().threads()
+             if t.num != orig.num]
+    if not other:
+        return None
+    res = {'other': other[0].num}
+    try:
+        gdb.execute('thread {}'.format(other[0].num), False, True)
+        res['bt_other'] = gdb.execute('bt', False, True)
+    finally:
+        gdb.execute('thread {}'.format(orig.num), False, True)
+    res['bt'] = gdb.execute('bt', False, True)
+    res['text'] = gdb.execute('lj-bt', False, True)
+    return res
+
+
 class ProbeCommand(gdb.Command):
     def __init__(self):
         super(ProbeCommand, self).__init__('ljbt-probe', gdb.COMMAND_STACK)
@@ -180,6 +202,12 @@ class ProbeCommand(gdb.Command):
                 rec['text'] = gdb.execute('lj-bt', False, True)
             except gdb.error as e:
                 rec['text'] = 'error: {}'.format(e)
+        if '--thread-hop' in argv and str(rec['seq']) in \
+                argv[argv.index('--thread-hop') + 1].split(','):
+            try:
+                rec['thread_hop'] = probe_thread_hop()
+            except Exception:
+                rec['thread_hop_error'] = traceback.format_exc()
         if '--all-fibers' in argv and hasattr(M, 'FiberUnwinder'):
             try:
                 rec['all_fibers'] = json.loads(gdb.execute(

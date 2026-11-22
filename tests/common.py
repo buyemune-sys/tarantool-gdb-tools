@@ -356,6 +356,26 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
     return probs
 
 
+def lua_lines(text):
+    '''The Lua and heuristic lines of lj-bt or of the filtered bt, from
+    "[lua]" on (as cli_gdb.lua_lines).'''
+    res = []
+    for line in (text or '').splitlines():
+        s = line.strip()
+        if '[lua]' in s:
+            s = s[s.index('[lua]'):]
+            if s.endswith(' ()'):
+                s = s[:-3]          # bt prints the (empty) arguments.
+            res.append(s)
+    return res
+
+
+def mark_lines(text):
+    '''The "!!" marks of lj-bt or of the filtered bt, from "!!" on.'''
+    return [line[line.index('!!'):] for line in (text or '').splitlines()
+            if '!!' in line]
+
+
 def norm_name(f):
     if f['kind'] == 'sig':
         return '<signal handler called>'
