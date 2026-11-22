@@ -604,14 +604,9 @@ class TestRustPlainRelease(PlainMixin, unittest.TestCase):
                          '<ljbt_plain::Call as ljbt_plain::LuaEntry>::entry')
         self.assertEqual([f['file'] for f in rust], [None] * len(rust))
 
-    @unittest.expectedFailure
-    def test_rust_functions_folded(self):
-        # call_t is <ljbt_plain::Call as ljbt_plain::LuaEntry>::entry: with
-        # no debuginfo ljbt_symname() takes the name from `info symbol`,
-        # whose regexp (\S+) stops at the first space; the function gets no
-        # name and is not folded into its frame (and the note says "no C
-        # frame of None ... a tail call in C?").
-        PlainMixin.test_rust_functions_folded(self)
+    # test_rust_functions_folded: call_t is <ljbt_plain::Call as
+    # ljbt_plain::LuaEntry>::entry, with no debuginfo its name comes from
+    # `info symbol` (ljbt_symname), spaces and all.
 
 
 class TestRustPlainStrip(PlainMixin, unittest.TestCase):

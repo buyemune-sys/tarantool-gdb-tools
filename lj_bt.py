@@ -456,8 +456,10 @@ def ljbt_symname(addr):
     except RuntimeError:
         pass
     try:
+        # "NAME [+ OFS] in section S [of FILE]"; a demangled NAME may have
+        # spaces: <ljbt_plain::Call as ljbt_plain::LuaEntry>::entry.
         out = gdb.execute('info symbol 0x{:x}'.format(addr), False, True)
-        m = re.match(r'(\S+)( \+ \d+)? in section', out)
+        m = re.match(r'(.+?)( \+ \d+)? in section ', out)
         if m:
             return m.group(1)
     except gdb.error:
