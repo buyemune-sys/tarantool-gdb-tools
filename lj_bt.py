@@ -88,17 +88,35 @@ def ljbt_enum(example):
 # Layout. ########################################################
 
 # Transcribed from lj_frame.h:139-180 (x64, non-Windows) and
-# lj_frame.h:194-202 (arm64), keyed by (arch, LJ_GC64).  JITX is
-# CFRAME_SIZE_JIT - CFRAME_SIZE: what BC_JLOOP subtracts from rsp
-# before jumping into a trace (vm_x86.dasc:5387, lj_frame.h:178).
+# lj_frame.h:194-202 (arm64), keyed by (arch, LJ_GC64).
+#  JITX   what BC_JLOOP subtracts from sp before jumping into a trace:
+#         CFRAME_SIZE_JIT - CFRAME_SIZE on x64 (vm_x86.dasc:5387,
+#         lj_frame.h:178); on arm64 SPS_FIXED, `sub sp, sp, #16`
+#         (vm_arm64.dasc BC_JLOOP, undone by lj_asm_arm64.h
+#         asm_tail_fixup) though lj_frame.h has no CFRAME_SIZE_JIT there.
+#  FP     where the VM's frame pointer points, if its CFI is fp-based:
+#         arm64 `add fp, sp, # SAVE_FP_LR_` and "def_cfa fp 16"
+#         (vm_arm64.dasc saveregs, emit_asm_debug); None on x64, whose
+#         VM CFI is sp-based.
+#  PCSTEP how far into the VM the synthetic pc of a trace's caller goes
+#         (gdb looks the CFI up at pc - 1; arm64 wants it aligned).
 LJBT_CFRAME_LAYOUTS = {
     ('x64', False): dict(PREV=6 * 8, PC=7 * 4, L=6 * 4, ERRF=5 * 4,
-                         NRES=4 * 4, SIZE=12 * 8, JITX=16),
+                         NRES=4 * 4, SIZE=12 * 8, JITX=16, FP=None,
+                         PCSTEP=1),
     ('x64', True): dict(PREV=6 * 8, PC=3 * 8, L=2 * 8, ERRF=3 * 4,
-                        NRES=2 * 4, SIZE=12 * 8, JITX=16),
+                        NRES=2 * 4, SIZE=12 * 8, JITX=16, FP=None,
+                        PCSTEP=1),
     ('arm64', True): dict(PREV=0, PC=8, L=16, ERRF=36, NRES=40, SIZE=208,
-                          JITX=0),
+                          JITX=16, FP=192, PCSTEP=4),
 }
+
+# The outermost frames of a thread or a fiber stack: gdb stops there with
+# "previous frame identical" on arm64 (libcoro's coro_startup), which is
+# no inconsistency.
+LJBT_STACK_BOTTOMS = ('coro_startup', 'coro_init', 'start_thread', 'clone',
+                      'clone3', '__clone', '_start', '__libc_start_main',
+                      '__libc_start_call_main', 'thread_start')
 
 LJBT_TV = 8                     # sizeof(TValue)
 LJBT_CFRAME_RESUME = 1          # lj_frame.h:275
@@ -124,8 +142,10 @@ class LJBTConf(object):
         arch = gdb.selected_inferior().architecture().name().lower()
         if 'x86-64' in arch:
             self.arch, self.spreg, self.pcreg = 'x64', 'rsp', 'rip'
+            self.fpreg = 'rbp'
         elif 'aarch64' in arch:
             self.arch, self.spreg, self.pcreg = 'arm64', 'sp', 'pc'
+            self.fpreg = 'x29'
         else:
             raise gdb.GdbError('lj-bt: unsupported arch ' + arch)
         lay = LJBT_CFRAME_LAYOUTS.get((self.arch, self.gc64))
@@ -900,11 +920,17 @@ if LJBT_HAVE_UNWINDER:
                     entry = c.sym.get('lj_BC_JFUNCF', entry)
                 if not entry:
                     return None
+                cf = sp + t.spadjust + c.cf['JITX']
                 ui = pf.create_unwind_info(LJBTFrameId(spv, t.mcode))
-                ui.add_saved_register(c.pcreg,
-                                      gdb.Value(entry + 1).cast(pcv.type))
-                ui.add_saved_register(c.spreg, gdb.Value(
-                    sp + t.spadjust + c.cf['JITX']).cast(spv.type))
+                ui.add_saved_register(c.pcreg, gdb.Value(
+                    entry + c.cf['PCSTEP']).cast(pcv.type))
+                ui.add_saved_register(c.spreg, gdb.Value(cf).cast(spv.type))
+                if c.cf['FP'] is not None:
+                    # The VM's CFI is fp-based there: give the VM frame
+                    # the fp it keeps while it runs.
+                    fpv = pf.read_register(c.fpreg)
+                    ui.add_saved_register(c.fpreg, gdb.Value(
+                        cf + c.cf['FP']).cast(fpv.type))
                 return ui
             except Exception:
                 return None
@@ -1072,32 +1098,37 @@ def ljbt_shortpath(path):
 
 
 def ljbt_walk_cstack(skip0, limit):
+    '''gdb frames, newest first, and notes ("!!"/"--") on how it ended.'''
     out = []
     notes = []
     try:
         f = gdb.newest_frame()
     except gdb.error as e:
-        return out, ['no stack: {}'.format(e)]
+        return out, ['!! no stack: {}'.format(e)]
     while f is not None and len(out) < limit:
         if not (skip0 and f.level() == 0):
             try:
                 out.append(LJBTCFrame(f))
             except gdb.error as e:
-                notes.append('frame {}: {}'.format(f.level(), e))
+                notes.append('!! frame {}: {}'.format(f.level(), e))
         try:
             nf = f.older()
         except gdb.error as e:
-            notes.append('unwinding stopped: {}'.format(e))
+            notes.append('!! unwinding stopped: {}'.format(e))
             break
         if nf is None:
             r = f.unwind_stop_reason()
             if r not in (gdb.FRAME_UNWIND_NO_REASON,
                          gdb.FRAME_UNWIND_OUTERMOST):
-                notes.append('unwinding stopped: {}'.format(
-                    gdb.frame_stop_reason_string(r)))
+                why = gdb.frame_stop_reason_string(r)
+                if f.name() in LJBT_STACK_BOTTOMS:
+                    notes.append('-- unwinding stopped at {}, the bottom of '
+                                 'the stack: {}'.format(f.name(), why))
+                else:
+                    notes.append('!! unwinding stopped: {}'.format(why))
         f = nf
     if f is not None and len(out) >= limit:
-        notes.append('more frames follow (use -n)')
+        notes.append('!! more frames follow (use -n)')
     return out, notes
 
 
@@ -1947,12 +1978,12 @@ def ljbt_backtrace(arg_L, limit, out, as_json=False):
     cframes, unotes = ljbt_walk_cstack(other_fiber, limit)
     notes = []
     tail = ljbt_stitch(cframes, defL, notes)
-    notes += ['!! ' + n for n in unotes]
+    notes += unotes
     if as_json:
         out.append(ljbt_json(defL, hdr, cframes, notes, tail))
         return
     out.append(hdr)
-    out.extend(n for n in notes if not n.startswith('!! unwinding'))
+    out.extend(n for n in notes if n not in unotes)
     for cfr in cframes:
         s = '#{:<4} {}'.format(cfr.level, cfr.text())
         if cfr.annot:
@@ -1966,7 +1997,7 @@ def ljbt_backtrace(arg_L, limit, out, as_json=False):
             n += 1
             out.append('#{:<4} {}'.format('{}.{}'.format(cfr.level, n),
                                           e['text']))
-    out.extend(n for n in notes if n.startswith('!! unwinding'))
+    out.extend(unotes)
     out.extend(e['text'] for e in tail)
 
 
@@ -2036,6 +2067,9 @@ def ljbt_vmstate(g):
     except gdb.error:
         return '?'
     if v >= 0:
+        if ljbt_conf().arch == 'arm64':
+            # BC_JLOOP stores 0: arm64 traces keep no number in vmstate.
+            return 'TRACE'
         return 'TRACE {}'.format(v)
     try:
         return ljbt_lj.vm_state(g)

@@ -90,7 +90,8 @@ The sysprof crash (tarantool/tarantool#11184): a sample taken after an `on_repla
 ### Known limitations
 
 - In a trace, the frames are those of the last snapshot before the pc: the line may lag a line behind, a fresh inlined frame may be missing, and the function may be one that later tail-called further.
-- Only x86_64 is tested; the layouts for arm64 are transcribed from `lj_frame.h` and never run.
+- arm64 is checked by CI only. Its layouts come from `lj_frame.h` and `vm_arm64.dasc`: the VM's CFI there is based on the frame pointer, and `BC_JLOOP` lowers sp by 16 as on x64, which the trace unwinder takes into account. arm64 traces keep no trace number in `vmstate`, so the header says just `TRACE`. The register top of the stack (BASE/PC of the VM) is read on x64 only.
+- gdb stops at the bottom of a fiber stack with "previous frame identical" on arm64 (`coro_startup`); that is a `--` note, not a mismatch.
 - Lua tail calls are recovered by the heuristic above only; a tail call into C shows as a missing C frame.
 - gdb's inline frames of `-O2` C code are printed as `[inlined]` and not otherwise examined.
 - `tarantool_L` is shared by several fibers whose cframes lie on different C stacks; without `tarantool-gdb.py` such frames are marked, not attributed to a fiber.
@@ -121,7 +122,7 @@ LJBT_TT_GDB=<tarantool-src>/tools/tarantool-gdb.py \
 LJBT_SEEDS=200 LJBT_STOPS=500 tests/run.sh all
 ```
 
-`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only. `stops` and `crash` need sysprof and skip themselves without it (arm64).
+`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only. `stops` and `crash` need sysprof and skip themselves without it (arm64). Breakpoint conditions on Lua numbers go through `$ljbt_arg(L, n)` of `tests/probe.py`: arm64 LuaJIT is dual-number, an integer there is an int32 with a tag, and `->n` would read its bits as a double.
 
 `tests/fetch.sh <version> <amd64|arm64> <dest>` downloads the official static deb of a release, unpacks it, adds the gdb extensions of its sources and prints the three variables, so a release is tested with:
 
