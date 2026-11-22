@@ -2197,8 +2197,11 @@ def ljbt_default_L(arg_L):
             c.G = int(ljbt_lj.G(ljbt_cast('lua_State *', defL)))
             LJBT_STATE['traces'] = None
     elif other_fiber:
-        defL, src = ljbt_fiber_L(sel), 'storage.lua.stack of ' + \
-            ljbt_fiber_desc(sel)
+        # A fiber made from C or Rust has none: what Lua it runs is in the
+        # VM entries of its C stack.
+        defL = ljbt_fiber_L(sel)
+        src = ('storage.lua.stack of ' if defL else
+               'no storage.lua.stack in ') + ljbt_fiber_desc(sel)
     elif c.G:
         defL, src = ljbt_cur_L(c.G), 'G->cur_L'
     hdr = 'lj-bt: L=0x{:x} ({})'.format(defL or 0, src or 'none')
@@ -2414,21 +2417,23 @@ With -v the frames whose callee cannot be verified say so.
         orig = u.fiber()
         docs = []
         try:
+            # Every fiber, also one with no storage.lua.stack: a fiber made
+            # from C or Rust may run Lua in a lua_State of its own (or in
+            # the one of a stored procedure), and it has a C stack anyway.
             for f in list(Cord().fibers()):
                 u.set_fiber(f)
                 gdb.invalidate_cached_frames()
                 if as_json:
                     out = []
-                    if ljbt_fiber_L(f):
+                    try:
                         ljbt_backtrace(None, limit, out, True)
+                        doc = out[0]
+                    except gdb.error as e:
+                        doc = 'null, "error": {}'.format(json.dumps(str(e)))
                     docs.append('{{"fiber": {}, "bt": {}}}'.format(
-                        json.dumps(ljbt_fiber_desc(f)),
-                        out[0] if out else 'null'))
+                        json.dumps(ljbt_fiber_desc(f)), doc))
                     continue
                 res.extend(['', '=== ' + ljbt_fiber_desc(f)])
-                if not ljbt_fiber_L(f):
-                    res.append('(no Lua stack)')
-                    continue
                 try:
                     ljbt_backtrace(None, limit, res)
                 except gdb.error as e:

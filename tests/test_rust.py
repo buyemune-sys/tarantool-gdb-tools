@@ -807,14 +807,12 @@ class TestRustTnt(RustRun, unittest.TestCase):
             if x['bt'] is not None:
                 self.assertEqual(C.warnings(x['bt']), [], x['fiber'])
 
-    # lj-bt --all-fibers runs lj-bt only for fibers with a Lua stack of
-    # their own (LJBTCommand.all_fibers: `if ljbt_fiber_L(f)`, else "(no
-    # Lua stack)", "bt": null): a fiber created from C or Rust has
-    # storage.lua.stack == NULL, though it may run Lua in a lua_State of
-    # its own (tlua's lua_state(), a C stored procedure) and always has a
-    # C stack.  So --all-fibers shows neither, unlike tt-fiber + lj-bt.
+    # lj-bt --all-fibers runs lj-bt for every fiber.  A fiber created from
+    # C or Rust has storage.lua.stack == NULL, though it may run Lua in a
+    # lua_State of its own (tlua's lua_state(), a C stored procedure) and
+    # always has a C stack; --all-fibers skipped it ("(no Lua stack)",
+    # "bt": null), unlike tt-fiber + lj-bt.
 
-    @unittest.expectedFailure
     @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
     def test_all_fibers_rust_fibers(self):
         allf = dict((x['fiber'], x['bt'])
@@ -828,7 +826,6 @@ class TestRustTnt(RustRun, unittest.TestCase):
             self.assertEqual(core_shape(mine[0])[0],
                              core_shape(rec['ljbt'])[0])
 
-    @unittest.expectedFailure
     @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
     def test_all_fibers_running_iproto_fiber(self):
         # At the stop in the iproto fiber, that very fiber.
