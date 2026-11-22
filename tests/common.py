@@ -27,6 +27,7 @@ LUA = os.path.join(TESTS, 'lua')
 # to see a new test fail before its fix.
 LJ_BT = os.environ.get('LJBT_LJ_BT') or os.path.join(ROOT, 'lj_bt.py')
 PROBE = os.path.join(TESTS, 'probe.py')
+CLI_GDB = os.path.join(TESTS, 'cli_gdb.py')
 
 TARANTOOL = os.environ.get('LJBT_TARANTOOL')
 LUAJIT_DBG = os.environ.get('LJBT_LUAJIT_DBG')

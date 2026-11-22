@@ -48,11 +48,15 @@ except ImportError:
 
 import __main__ as ljbt_lj
 
-if not all(hasattr(ljbt_lj, n) for n in (
-        'frame_prevl', 'mref', 'gcref', 'gcval', 'funcproto', 'typenames',
-        'itypemap')):
+# What lj-bt uses of the LuaJIT extension (both luajit-gdb.py and
+# luajit_dbg.py have all of it).
+LJBT_NEEDED = ('mref', 'gcref', 'gcval', 'G', 'J', 'funcproto', 'frame_ftsz',
+               'typenames', 'itypemap', 'vm_state', 'LJ_GC64', 'LJ_FR2')
+if not all(hasattr(ljbt_lj, n) for n in LJBT_NEEDED):
     raise gdb.GdbError('lj_bt.py: source luajit_dbg.py (or luajit-gdb.py '
-                       'of older LuaJIT) first')
+                       'of older LuaJIT) first; missing: {}'.format(', '.join(
+                           n for n in LJBT_NEEDED
+                           if not hasattr(ljbt_lj, n))))
 
 LJBT_TYPES = {}
 
@@ -111,6 +115,12 @@ LJBT_CFRAME_LAYOUTS = {
                           JITX=16, FP=192, PCSTEP=4),
 }
 
+# Functions in the VM's code that are plain C-ABI leaf helpers, called
+# from C or from traces, with no cframe of their own (vm_x64.dasc
+# "Math helper functions" and lj_vm_cpuid, vm_*.dasc tail).
+LJBT_VM_LEAF = re.compile(r'^(lj_vm_(floor|ceil|trunc)(_sse)?|lj_vm_mod|'
+                          r'lj_vm_cpuid|lj_assert_bad_for_arg_type)$')
+
 # The outermost frames of a thread or a fiber stack: gdb stops there with
 # "previous frame identical" on arm64 (libcoro's coro_startup), which is
 # no inconsistency.
@@ -123,6 +133,12 @@ LJBT_CFRAME_RESUME = 1          # lj_frame.h:275
 LJBT_CFRAME_RAWMASK = ~3        # lj_frame.h:277
 LJBT_GCT_THREAD = 6             # gct = ~LJ_TTHREAD, lj_obj.h
 LJBT_GCT_FUNC = 8               # ~LJ_TFUNC
+LJBT_LUA_YIELD = 1              # LUA_YIELD, lua.h
+
+# Walk limits against a looping or garbage stack; reaching one is marked.
+# A real Lua stack has fewer links (LJ_STACK_MAX slots) and cframes (the
+# C stack overflows first).
+LJBT_LIMITS = {'cframes': 1000, 'links': 100000}
 LJBT_CONT_TAILCALL = 0          # LJ_CONT_TAILCALL, lj_frame.h:87
 LJBT_CONT_FFI_CALLBACK = 1      # LJ_CONT_FFI_CALLBACK
 LJBT_SNAP_FRAME = 0x010000      # lj_jit.h:201
@@ -139,7 +155,13 @@ class LJBTConf(object):
     '''Build-dependent constants, resolved once per stop.'''
 
     def __init__(self):
-        self.fr2 = int(ljbt_lj.LJ_FR2 or 0)
+        if ljbt_lj.LJ_GC64 is None or ljbt_lj.LJ_FR2 is None:
+            # The extension postpones its setup until libluajit symbols
+            # are loaded; "None" must not read as "not GC64".
+            raise gdb.GdbError('lj-bt: the LuaJIT extension is not '
+                               'initialized yet (no LuaJIT symbols loaded?)')
+        self.thread = ljbt_thread_key()
+        self.fr2 = int(ljbt_lj.LJ_FR2)
         self.gc64 = bool(ljbt_lj.LJ_GC64)
         arch = gdb.selected_inferior().architecture().name().lower()
         if 'x86-64' in arch:
@@ -188,13 +210,28 @@ class LJBTConf(object):
         return self.bcmode[op] & 7
 
 
-LJBT_STATE = {'conf': None, 'traces': None}
+LJBT_STATE = {'conf': None, 'traces': None, 'fiber': None}
+
+
+def ljbt_thread_key():
+    '''The selected thread: G comes from tarantool_L, which is __thread
+    (src/lua/init.c, since 3.7), so the state is per thread, not per
+    stop.'''
+    try:
+        th = gdb.selected_thread()
+        return th.ptid if th is not None else None
+    except gdb.error:
+        return None
 
 
 def ljbt_conf():
-    if LJBT_STATE['conf'] is None:
-        LJBT_STATE['conf'] = LJBTConf()
-    return LJBT_STATE['conf']
+    c = LJBT_STATE['conf']
+    if c is not None and c.thread != ljbt_thread_key():
+        ljbt_reset()                # `thread N` since the stop.
+        c = None
+    if c is None:
+        c = LJBT_STATE['conf'] = LJBTConf()
+    return c
 
 
 def ljbt_reset(event=None):
@@ -203,18 +240,32 @@ def ljbt_reset(event=None):
     LJBT_STATE['owners'] = None
 
 
+def ljbt_running_fiber():
+    fib = getattr(ljbt_lj, 'fiber', None)
+    try:
+        return int(fib()) if fib is not None else None
+    except Exception:
+        return None
+
+
 def ljbt_on_stop(event):
     ljbt_reset()
     # tarantool-gdb.py keeps the fiber picked by `tt-fiber` (or the one
     # running when its unwinder was created) across `continue`: after a
     # stop in another fiber `bt` and lj-bt would unwind a stale saved
-    # context.  A new stop starts from the running fiber.
+    # context.  So when the running fiber changed since the last stop, the
+    # selection goes back to it; a stepi within one fiber keeps it.
     FU = getattr(ljbt_lj, 'FiberUnwinder', None)
     if FU is not None:
-        try:
-            FU.instance().reset_fiber()
-        except Exception:
-            pass
+        cur = ljbt_running_fiber()
+        # None: tarantool-gdb.py came after the last stop, nothing is
+        # known to be stale.
+        if LJBT_STATE['fiber'] is not None and cur != LJBT_STATE['fiber']:
+            try:
+                FU.instance().reset_fiber()
+            except Exception:
+                pass
+        LJBT_STATE['fiber'] = cur
     try:
         ljbt_conf()
         gdb.invalidate_cached_frames()
@@ -558,6 +609,9 @@ class LJBTState(object):
         self.stack = int(ljbt_lj.mref('TValue *', L['stack']))
         self.cframe = int(L['cframe'])
         self.status = int(L['status'])
+        # A yielded coroutine: no cframe, its frames are on no C stack
+        # until it is resumed (lj_state.c, LUA_YIELD).
+        self.suspended = self.cframe == 0 and self.status == LJBT_LUA_YIELD
         self.topframe = top if top is not None else self.base - LJBT_TV
         self.topnote = topnote
         self.segments = []
@@ -565,7 +619,11 @@ class LJBTState(object):
         self.flags = {}         # raw cframe -> CFRAME_RESUME etc.
         cf = self.cframe
         seen = set()
-        while cf and len(self.chain) < 1000:
+        while cf:
+            if len(self.chain) >= LJBT_LIMITS['cframes']:
+                self.notes.append('more than {} cframes, the rest is not '
+                                  'walked'.format(LJBT_LIMITS['cframes']))
+                break
             r = ljbt_cf_raw(cf)
             if r in seen:
                 self.notes.append('cframe chain loops at 0x{:x}'.format(r))
@@ -630,8 +688,12 @@ class LJBTState(object):
         bot = self.stack + LJBT_TV * c.fr2
         seg = LJBTSegment(self, cf)
         steps = 0
-        while steps < 100000:
+        while True:
             steps += 1
+            if steps > LJBT_LIMITS['links']:
+                self.notes.append('more than {} frame links, the rest is '
+                                  'not walked'.format(LJBT_LIMITS['links']))
+                break
             if cf:
                 r = ljbt_cf_raw(cf)
                 try:
@@ -684,9 +746,10 @@ class LJBTState(object):
             if closes:
                 self.segments.append(seg)
                 if cf is None or cf == 0:
-                    self.notes.append(
-                        '{} frame at 0x{:x} without a cframe'.format(
-                            link.tname(), frame))
+                    if not self.suspended:
+                        self.notes.append(
+                            '{} frame at 0x{:x} without a cframe'.format(
+                                link.tname(), frame))
                     cf = 0
                 elif t == LJBT_FT_CP and cf & LJBT_CFRAME_RESUME:
                     cf = 0      # Bottom of a resumed coroutine.
@@ -959,6 +1022,11 @@ if LJBT_HAVE_UNWINDER:
 
 
 def ljbt_find_G():
+    '''G of the selected thread.  tarantool_L is __thread since 3.7: in
+    a thread of Tarantool with no Lua (iproto, WAL, ...) it is NULL, and
+    then there is no G here (before 3.7 it is a plain global, every
+    thread sees the G of tx); sysprof.g, a plain global, is only a
+    fallback for hosts without tarantool_L or globalL.'''
     for name in ('tarantool_L', 'globalL'):
         sym = gdb.lookup_global_symbol(name) or \
             gdb.lookup_static_symbol(name)
@@ -970,6 +1038,7 @@ def ljbt_find_G():
                 return int(ljbt_lj.G(ljbt_cast('lua_State *', v)))
         except gdb.error:
             continue
+        return None
     sym = gdb.lookup_static_symbol('sysprof')
     if sym is not None:
         try:
@@ -1066,6 +1135,8 @@ class LJBTCFrame(object):
         if not invm and self.name and c.vm_end is None:
             invm = re.match(r'lj_(BC|ff|fff|cont|vm)_', self.name) \
                 is not None
+        if invm and self.name and LJBT_VM_LEAF.match(self.name):
+            invm = False        # Plain C-ABI helpers in the VM's code.
         if invm and self.sp is not None and \
                 self.type in (gdb.NORMAL_FRAME, gdb.SIGTRAMP_FRAME,
                               gdb.ARCH_FRAME):
@@ -1147,8 +1218,12 @@ def ljbt_walk_cstack(skip0, limit):
                     notes.append('!! unwinding stopped: {}'.format(why))
         f = nf
     if f is not None and len(out) >= limit:
-        notes.append('!! more frames follow (use -n)')
+        notes.append(LJBT_MORE_FRAMES)
     return out, notes
+
+
+# Not a mismatch: the walk stopped at the -n limit on purpose.
+LJBT_MORE_FRAMES = '-- more frames follow (use -n)'
 
 
 # Tail calls (heuristic). ########################################
@@ -1231,15 +1306,52 @@ def ljbt_uvname(pt, idx):
     '''lj_debug.c:lj_debug_uvname.'''
     if not pt.uvinfo or idx >= pt.sizeuv:
         return '?'
-    data = ljbt_mem(pt.uvinfo, 4096)
+    data = ljbt_mem_until(pt.uvinfo, lambda d: d.count(b'\0') > idx)
     return data.split(b'\0')[idx].decode('utf-8', 'replace')
+
+
+def ljbt_mem_until(addr, done, chunk=4096, limit=1 << 24):
+    '''Bytes from addr, read in chunks until done(data) holds; uvinfo and
+    varinfo have no stored size (lj_debug.c walks them to a terminator).
+    A chunk that cannot be read ends the data (the last one may run past
+    the mapping).'''
+    data = b''
+    while len(data) < limit and not done(data):
+        try:
+            data += ljbt_mem(addr + len(data), chunk)
+        except gdb.MemoryError:
+            if chunk <= 64:
+                break
+            chunk //= 4
+    return data
+
+
+def ljbt_varinfo_end(data):
+    '''True once data holds the whole varinfo: VARNAME_END outside of a
+    name or a uleb128 (lj_debug.c:debug_varname, the same walk).'''
+    p = 0
+    try:
+        while True:
+            vn = data[p]
+            if vn == 0:
+                return True
+            if vn < LJBT_VARNAME_MAX:
+                p += 1
+            else:
+                p = data.index(b'\0', p) + 1
+            for _ in range(2):          # startpc, endpc deltas
+                while data[p] >= 0x80:
+                    p += 1
+                p += 1
+    except (IndexError, ValueError):
+        return False
 
 
 def ljbt_varname(pt, pos, slot):
     '''lj_debug.c:debug_varname: the local living in slot at pos.'''
     if not pt.varinfo:
         return None
-    data = ljbt_mem(pt.varinfo, 8192)
+    data = ljbt_mem_until(pt.varinfo, ljbt_varinfo_end)
     p, lastpc = 0, 0
 
     def uleb():
@@ -1252,7 +1364,7 @@ def ljbt_varname(pt, pos, slot):
             sh += 7
             if b < 0x80:
                 return v
-    while p < len(data) - 16:
+    while p < len(data):
         vn = data[p]
         if vn < LJBT_VARNAME_MAX:
             if vn == 0:
@@ -1486,16 +1598,19 @@ def ljbt_tail_chain(exp, fn):
 def ljbt_vmregs_top(cfr, st):
     '''For an interrupted VM frame, the real top frame from BASE and PC
     registers (x64 non-Windows: rdx and rbx in both vm_x86.dasc:28-46 and
-    vm_x64.dasc:21-32), if they make sense.'''
+    vm_x64.dasc:21-32; arm64: x19 and x21, vm_arm64.dasc:31-33), if they
+    make sense.  Only inside a bytecode handler (lj_BC_*) do they hold
+    the frame being run.'''
     c = ljbt_conf()
-    if c.arch != 'x64':
+    regs = {'x64': ('rdx', 'rbx'), 'arm64': ('x19', 'x21')}.get(c.arch)
+    if regs is None:
         return None
     if not (cfr.name and cfr.name.startswith('lj_BC_')):
         return None
     mask = 0xffffffffffffffff if c.gc64 else 0xffffffff
     try:
-        base = int(cfr.frame.read_register('rdx')) & mask
-        pc = int(cfr.frame.read_register('rbx')) & mask
+        base = int(cfr.frame.read_register(regs[0])) & mask
+        pc = int(cfr.frame.read_register(regs[1])) & mask
     except (gdb.error, ValueError):
         return None
     if not (st.stack < base < st.stack + 0x10000000):
@@ -1609,6 +1724,11 @@ def ljbt_warn(text):
             'text': text if text.startswith('!!') else '!! ' + text}
 
 
+def ljbt_info(text):
+    return {'kind': 'info',
+            'text': text if text.startswith('--') else '-- ' + text}
+
+
 def ljbt_cont_kind(link):
     '''What a continuation frame is (lj_frame.h:87-106).'''
     try:
@@ -1641,7 +1761,7 @@ def ljbt_cframe_line(seg, fn):
     return fn.proto.line_retpc(pc), 'pc saved in cframe, may be stale'
 
 
-def ljbt_stitch(cframes, defL, out):
+def ljbt_stitch(cframes, defL, out, truncated=False):
     c = ljbt_conf()
     states = {}
     order = {}
@@ -1666,12 +1786,16 @@ def ljbt_stitch(cframes, defL, out):
         if cfr.kind == 'vm' and cfr.L not in first_band:
             first_band[cfr.L] = i
     pending_top = {}
+    stale_top = set()
     for L, i in first_band.items():
         cfr = cframes[i]
         prevf = cframes[i - 1] if i > 0 else None
         if prevf is not None and prevf.kind == 'trace' and jit_base:
             pending_top[L] = (jit_base - LJBT_TV, 'trace')
         elif prevf is None or prevf.kind == 'sig':
+            # The VM itself was interrupted here, not a C function it
+            # called: L->base is synced only when the VM leaves.
+            r = None
             try:
                 tmp = LJBTState(L)
                 r = ljbt_vmregs_top(cfr, tmp)
@@ -1679,6 +1803,8 @@ def ljbt_stitch(cframes, defL, out):
                     pending_top[L] = (r[0], ('regs', r[1]))
             except gdb.error:
                 pass
+            if r is None:
+                stale_top.add(L)
 
     for L, (top, why) in pending_top.items():
         st = state(L, top, why)
@@ -1695,6 +1821,12 @@ def ljbt_stitch(cframes, defL, out):
             st.info.append('VM BASE register says top frame 0x{:x}, '
                             'L->base-1 is 0x{:x}: L->base is stale'.format(
                                 top, st.base - LJBT_TV))
+    for L in stale_top:
+        state(L).info.append(
+            'stopped in the VM ({}) with no frame in its registers: the '
+            'top frame is L->base-1, which the VM syncs only when it '
+            'leaves, so newer frames may be missing'.format(
+                cframes[first_band[L]].name))
 
     # Pass 2: bands.
     for i, cfr in enumerate(cframes):
@@ -1791,10 +1923,26 @@ def ljbt_stitch(cframes, defL, out):
 
     # Leftovers.
     tail = []
+    # No VM on this C stack at all (the scheduler, a C fiber, a thread of
+    # its own): the coroutine G->cur_L names last ran elsewhere.
+    elsewhere = not any(cfr.kind in ('vm', 'vm?', 'trace')
+                        for cfr in cframes)
     if defL and defL not in states:
         st = state(defL)
-        tail.append(ljbt_warn('L=0x{:x} has no VM entry on this C stack:'
-                              .format(defL)))
+        if st.suspended:
+            tail.append(ljbt_info('L=0x{:x} is a suspended coroutine: its '
+                                  'frames are on no C stack until resumed:'
+                                  .format(defL)))
+        elif truncated:
+            tail.append(ljbt_info('L=0x{:x} has no VM entry above the -n '
+                                  'limit:'.format(defL)))
+        elif elsewhere:
+            st.suspended = True     # Shown as such, see below.
+            tail.append(ljbt_info('no Lua runs on this C stack; L=0x{:x} '
+                                  'last ran on another one:'.format(defL)))
+        else:
+            tail.append(ljbt_warn('L=0x{:x} has no VM entry on this C '
+                                  'stack:'.format(defL)))
     # What sysprof would walk (lj_sysprof.c:stream_backtrace_lua).
     curL = ljbt_cur_L(c.G) if c.G else 0
     if curL in states and ljbt_sysprof_running():
@@ -1821,15 +1969,20 @@ def ljbt_stitch(cframes, defL, out):
         for seg in st.segments:
             if seg.shown or not seg.links:
                 continue
+            if st.suspended:
+                ljbt_render_links(seg, None, tail)
+                continue
             owner = ljbt_cframe_owner(ljbt_cf_raw(seg.cf)) if seg.cf \
                 else None
-            tail.append(ljbt_warn(
+            mark = ljbt_info if truncated else ljbt_warn
+            tail.append(mark(
                 'Lua frames of L=0x{:x} cframe={} not matched to this C '
                 'stack{}:'.format(
                     L, '0x{:x}'.format(ljbt_cf_raw(seg.cf))
                     if seg.cf else 'none',
                     ' (the cframe is on the C stack of {})'.format(owner)
-                    if owner else '')))
+                    if owner else ' (its VM entry is below the -n limit)'
+                    if truncated else '')))
             ljbt_render_links(seg, None, tail)
     LJBT_STATE['states'] = states
     return tail
@@ -1848,9 +2001,6 @@ def ljbt_render_trace(tfr, st, seg):
         res = t.frames(sn)
     except gdb.error as e:
         tfr.annot.append('!! cannot decode snapshot: {}'.format(e))
-        return None
-    if res is None:
-        tfr.annot.append('!! snapshot frames not decoded (FR2)')
         return None
     pc, fr = res
     base_fn = seg.links[0].fn if seg.links else None
@@ -1994,7 +2144,8 @@ def ljbt_backtrace(arg_L, limit, out, as_json=False):
     gdb.invalidate_cached_frames()
     cframes, unotes = ljbt_walk_cstack(other_fiber, limit)
     notes = []
-    tail = ljbt_stitch(cframes, defL, notes)
+    tail = ljbt_stitch(cframes, defL, notes,
+                       truncated=LJBT_MORE_FRAMES in unotes)
     notes += unotes
     if as_json:
         out.append(ljbt_json(defL, hdr, cframes, notes, tail))
@@ -2149,7 +2300,12 @@ With -v the frames whose callee cannot be verified say so.
                 LJBT_OPTS['full'] = True
             elif a == '-n':
                 i += 1
+                if i >= len(argv) or not argv[i].isdigit() or \
+                        int(argv[i]) < 1:
+                    raise gdb.GdbError('lj-bt: -n needs a positive number')
                 limit = int(argv[i])
+            elif a == '-o' and i + 1 >= len(argv):
+                raise gdb.GdbError('lj-bt: -o needs a file')
             elif a == '--all-fibers':
                 allf = True
             elif a == '--json':
@@ -2279,9 +2435,11 @@ if LJBTFrameDecorator is not None:
 
         def filter(self, frame_iter):
             decos = []
+            truncated = False
             for d in frame_iter:
                 decos.append(d)
                 if len(decos) >= 512:
+                    truncated = True
                     break
             saved = dict(LJBT_OPTS)
             LJBT_OPTS.update(verbose=False, full=False, tail_chain=False,
@@ -2293,7 +2451,7 @@ if LJBTFrameDecorator is not None:
                 defL, hdr, other = ljbt_default_L(None)
                 cframes = [LJBTCFrame(d.inferior_frame()) for d in decos]
                 notes = []
-                tail = ljbt_stitch(cframes, defL, notes)
+                tail = ljbt_stitch(cframes, defL, notes, truncated)
                 res = [LJBTDecorated(d, cfr)
                        for d, cfr in zip(decos, cframes)]
                 if res:
@@ -2302,7 +2460,12 @@ if LJBTFrameDecorator is not None:
                 res.extend(frame_iter)
                 return iter(res)
             except Exception as e:
-                gdb.write('lj-bt frame filter: {}\n'.format(e))
+                # Say it once (no symbols, say, would repeat it on every
+                # bt), then leave bt as it is.
+                msg = 'lj-bt frame filter: {}'.format(e)
+                if msg != LJBT_STATE.get('filter_error'):
+                    gdb.write(msg + ' (plain bt follows)\n')
+                    LJBT_STATE['filter_error'] = msg
                 return iter(decos + list(frame_iter))
             finally:
                 LJBT_OPTS.clear()

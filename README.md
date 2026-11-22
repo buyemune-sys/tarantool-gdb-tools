@@ -69,7 +69,7 @@ A mixed stack: an FFI `get` called from a `table.sort` comparator, through a cha
 A C function called from a JIT trace; plain gdb stops at `??` there.
 
 ```
-!! L=0x40000378: running a trace: Lua frames from g->jit_base 0x406480e8
+-- L=0x40000378: running a trace: Lua frames from g->jit_base 0x406480e8
 #1    0x555580d127a7 in [trace 175] started at mixed.lua:84  snapshot #6
 #1.1  [lua] mixed.lua:80 in function <mixed.lua:78>  (inlined in trace 175, snapshot #6)
 #2.1  [lua] mixed.lua:85 in function <mixed.lua:73>  (trace 175 base frame, snapshot #6)
