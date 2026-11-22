@@ -14,7 +14,7 @@ Status: prototypes. Everything needs DWARF in the Tarantool binary, as `luajit_d
 
 `lj-bt` prints the C frames and the Lua frames of a Tarantool process in the real order of the calls. Plain `bt` shows only the C stack, and `lj-stack` shows only the Lua stack of one coroutine; matching them by eye is what this replaces. Loading it also installs a frame filter, so plain `bt` prints the stitched stack, and an unwinder, so `bt` goes through JIT traces.
 
-Tested on x86_64 with three builds: Tarantool 3.9.0 from the official static deb (GC64, DWARF), and Tarantool master built from source with DWARF, with and without GC64, both with LuaJIT 8af934d9, the one of 3.9.0.
+Tested on x86_64 with the official static debs of Tarantool CE 3.3 to 3.9 (GC64, DWARF; see [CI](#ci)), and with Tarantool master built from source with DWARF, with and without GC64.
 
 ### Usage
 
@@ -25,7 +25,7 @@ Tested on x86_64 with three builds: Tarantool 3.9.0 from the official static deb
 (gdb) lj-bt --all-fibers
 ```
 
-Load the extension of the LuaJIT the binary was built with: `src/luajit_dbg.py` of tarantool/luajit at the commit of Tarantool's `third_party/luajit`, which is `src/luajit-gdb.py` before LuaJIT 5db8c217 (Tarantool 3.3-3.5). `lj-bt` takes only the helpers both have; the bytecode and IR names it needs come from the DWARF of the binary.
+Load the extension of the LuaJIT the binary was built with: `src/luajit_dbg.py` of tarantool/luajit at the commit of Tarantool's `third_party/luajit`, which is `src/luajit-gdb.py` before LuaJIT 5db8c217 (Tarantool 3.3-3.5). `lj-bt` takes only the helpers both have; the bytecode and IR names it needs come from the DWARF of the binary. `tests/fetch.sh` gets the right files for a release.
 
 For fibers, load Tarantool's own extension after the process has started: `python import gdb.printing`, then `source <tarantool-src>/tools/tarantool-gdb.py`. After `tt-fiber <id>`, `lj-bt` prints the stack of that fiber.
 
@@ -121,7 +121,29 @@ LJBT_TT_GDB=<tarantool-src>/tools/tarantool-gdb.py \
 LJBT_SEEDS=200 LJBT_STOPS=500 tests/run.sh all
 ```
 
-`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only.
+`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only. `stops` and `crash` need sysprof and skip themselves without it (arm64).
+
+`tests/fetch.sh <version> <amd64|arm64> <dest>` downloads the official static deb of a release, unpacks it, adds the gdb extensions of its sources and prints the three variables, so a release is tested with:
+
+```
+export $(tests/fetch.sh 3.9.0 amd64 ~/tarantool-3.9.0)
+tests/run.sh
+```
+
+## CI
+
+`.github/workflows/test.yml` runs the tests against every Tarantool CE minor that tt v3 supports, the last patch of each, on both architectures:
+
+| | 3.3.5 | 3.4.2 | 3.5.2 | 3.6.4 | 3.7.2 | 3.8.2 | 3.9.0 |
+|---|---|---|---|---|---|---|---|
+| LuaJIT extension | `luajit-gdb.py` | `luajit-gdb.py` | `luajit-gdb.py` | `luajit_dbg.py` | `luajit_dbg.py` | `luajit_dbg.py` | `luajit_dbg.py` |
+| amd64 (`ubuntu-24.04`) | all groups | all groups | all groups | all groups | all groups | all groups | all groups |
+| arm64 (`ubuntu-24.04-arm`) | oracle core random tail | same | same | same | same | same | same |
+
+- The binaries are the static debs of Tarantool's package repository (they carry DWARF), cached per version and architecture; the extensions come from the tag (`tools/tarantool-gdb.py`) and from tarantool/luajit at the tag's `third_party/luajit`.
+- On push and pull requests the long groups are cut: 50 seeds, 100 stops, two crash attempts of 20 s. The daily scheduled run takes 200 seeds, 500 stops, three attempts of 40 s.
+- On arm64 LuaJIT has no sysprof (nor memprof), so `stops` and `crash` are skipped, with a notice in the log. The arm64 layouts of `lj-bt` were never run before this CI, so the arm64 jobs are `continue-on-error` until they are green.
+- A failed job uploads its work directories (`gdb.log`, `probe.jsonl`, `violations.jsonl`) as the artifact `logs-<version>-<arch>`.
 
 ## License
 

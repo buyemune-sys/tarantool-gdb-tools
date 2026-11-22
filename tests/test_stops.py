@@ -62,6 +62,7 @@ def violations(rec):
 class StopsMixin(object):
     jit = 'on'
 
+    @unittest.skipUnless(C.HAS_SYSPROF, C.NO_SYSPROF)
     def test_random_stops(self):
         wd = C.WorkDir('stops')
         probe = wd.file('probe.jsonl')

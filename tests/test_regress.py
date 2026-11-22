@@ -91,6 +91,7 @@ class TailMixin(object):
 class CrashMixin(object):
     what = None
 
+    @unittest.skipUnless(C.HAS_SYSPROF, C.NO_SYSPROF)
     def test_crash(self):
         rec, wd = None, None
         for attempt in range(ATTEMPTS):

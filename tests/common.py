@@ -56,6 +56,13 @@ def lua_eval(code, timeout=60):
 
 IS_GC64 = lua_eval("print(require('ffi').abi('gc64'))") == 'true'
 
+# sysprof drives layer 3 and the crashes of layer 5; LuaJIT has no
+# sysprof on arm64 (nor memprof), start() fails there.
+HAS_SYSPROF = lua_eval(
+    "local ok = misc.sysprof.start({mode = 'D', interval = 100}) "
+    "if ok then misc.sysprof.stop() end print(ok == true)") == 'true'
+NO_SYSPROF = 'no sysprof in this build (LuaJIT has none on arm64)'
+
 
 class WorkDir(object):
     '''A temporary directory for one tarantool run (box files, unix

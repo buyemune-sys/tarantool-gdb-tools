@@ -1,0 +1,79 @@
+name: test
+
+# lj-bt against the official static builds (they carry DWARF) of every
+# Tarantool CE minor that tt v3 supports, 3.3 to 3.9, last patch of each,
+# with the gdb extensions of the same sources (tests/fetch.sh).
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 2 * * *'    # Daily: the full seeds, stops and crash runs.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tarantool ${{ matrix.version }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    # The arm64 layouts of lj-bt (lj_frame.h) were never run before this
+    # CI: report, do not fail the workflow, until they are green.
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2, 3.9.0]
+        arch: [amd64, arm64]
+    env:
+      LJBT_SEEDS: ${{ github.event_name == 'schedule' && '200' || '50' }}
+      LJBT_STOPS: ${{ github.event_name == 'schedule' && '500' || '100' }}
+      LJBT_ATTEMPTS: ${{ github.event_name == 'schedule' && '3' || '2' }}
+      LJBT_CRASH_SECS: ${{ github.event_name == 'schedule' && '40' || '20' }}
+      LJBT_KEEP: 1
+      DL: ${{ github.workspace }}/.ljbt-dl/${{ matrix.version }}-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gdb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+          gdb --version | head -1
+
+      - name: Cache the Tarantool build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DL }}
+          key: tarantool-${{ matrix.version }}-${{ matrix.arch }}-v1
+
+      - name: Fetch Tarantool ${{ matrix.version }} and its gdb extensions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tests/fetch.sh ${{ matrix.version }} ${{ matrix.arch }} "$DL" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}/ljbt" >> "$GITHUB_ENV"
+          mkdir -p "${{ runner.temp }}/ljbt"
+
+      - name: Layers oracle, core, random, tail
+        run: tests/run.sh oracle core random tail 2>&1 | tee "$TMPDIR/run-main.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Layers stops and crash
+        if: matrix.arch == 'amd64'
+        run: tests/run.sh stops crash 2>&1 | tee "$TMPDIR/run-sysprof.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Layers stops and crash (skipped)
+        if: matrix.arch == 'arm64'
+        run: echo "::notice::stops and crash are skipped on arm64 - LuaJIT has no sysprof (nor memprof) there, and both layers run on sysprof"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logs-${{ matrix.version }}-${{ matrix.arch }}
+          # gdb.log, probe.jsonl and violations.jsonl of every run.
+          path: ${{ runner.temp }}/ljbt
+          retention-days: 14
