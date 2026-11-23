@@ -59,6 +59,8 @@ MP_SAMPLES = [
     ('error', 'msgpack.encode(err)'),
     # MP_TUPLE (7): format id 5, payload {1, 'x'}.
     ('tuple', "'\\xc7\\x05\\x07\\x05\\x92\\x01\\xa1x'"),
+    # An extension type tarantool does not have, in an array.
+    ('unknown_ext', "'\\x92\\xd4\\x63\\x2a\\x01'"),
 ]
 MP = dict((name, i) for i, (name, _) in enumerate(MP_SAMPLES))
 # The print() arguments: the tuple, the cdata, then the MsgPack strings.
@@ -816,6 +818,9 @@ class TestMsgPack(DbgCase):
         for k, v in (('type', e['type']), ('message', e['message']),
                      ('code', e['code']), ('line', e['trace'][0]['line'])):
             self.assertIn('["{}"] = {}'.format(k, mp_text(v)), out)
+
+    def test_unknown_ext(self):
+        self.assertEqual(self.mp('unknown_ext'), '{ext:99 of len 1, 1U}')
 
     def test_tuple_ext(self):
         # The keys are names, not MsgPack (as test-tarantool-gdb.py has).

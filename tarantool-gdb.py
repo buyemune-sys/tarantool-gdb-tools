@@ -663,7 +663,7 @@ class MsgPackPrinter(gdb.printing.PrettyPrinter):
                 self.seek(self.ext_len)
 
             def to_string(self):
-                return 'ext:{} of len {}'.format(self.type, self.ext_len)
+                return 'ext:{} of len {}'.format(self.ext_type, self.ext_len)
 
     ExtPrinter = Printer.ExtPrinter
 
