@@ -14,6 +14,7 @@ import harness as H
 from harness import DbgCase, Scenario, G, GG, gcval, mref
 
 RX_ADDR = r'0x[0-9a-f]+'
+RX_P = 'p64' if H.IS_GC64 else 'p32'    # IRT_PGC
 NUM = 'integer' if H.IS_DUALNUM else 'number'
 COMMANDS = ['lj-arch', 'lj-bc', 'lj-ctype', 'lj-func', 'lj-gc', 'lj-gco',
             'lj-gctop', 'lj-ir', 'lj-jslots', 'lj-proto', 'lj-stack',
@@ -907,10 +908,10 @@ JIT_CASES = [
     ('@table', 'local function f(t) t.a = nil t.b = 1 return t end '
      'CALL({a = 1})', [
         r'int FLOAD .* tab\.hmask',
-        r'p64 FLOAD .* tab\.node',
-        r'p64 HREFK .* string "a" @ ' + RX_ADDR + r' KSLOT: @\d',
-        r'p64 HREF .* string "b" @ ' + RX_ADDR,
-        r'p64 EQ .* \[g->nilnode\]']),
+        RX_P + r' FLOAD .* tab\.node',
+        RX_P + r' HREFK .* string "a" @ ' + RX_ADDR + r' KSLOT: @\d',
+        RX_P + r' HREF .* string "b" @ ' + RX_ADDR,
+        RX_P + r' EQ .* \[g->nilnode\]']),
     ('@uref', 'local uv = 0 local function f(a) uv = a return uv end '
      'CALL(1)', [r'UREFO .* lit: #0']),
     ('@call', 'local function f(a, b) return a < b, ffi.errno() end '
