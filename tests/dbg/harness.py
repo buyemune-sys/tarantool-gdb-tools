@@ -57,13 +57,44 @@ def lua_eval(code, timeout=60):
     return p.stdout.strip()
 
 
+def tvalue_bits(lua_value, timeout=60):
+    '''The 64 bits of the TValue of a Lua value, the argument of print()
+    at the stop in lj_cf_print, as gdb reads them from memory.'''
+    p = subprocess.run([GDB, '-batch', '-nx', '-ex', 'set startup-with-shell off',
+                        '-ex', 'break lj_cf_print',
+                        '-ex', 'run', '-ex', 'output/x *(unsigned long long *)L->base',
+                        '-ex', 'echo \\n', '-ex', 'kill',
+                        '--args', TARANTOOL, '-e',
+                        'print({}) os.exit(0)'.format(lua_value)],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       stdin=subprocess.DEVNULL, universal_newlines=True,
+                       timeout=timeout)
+    lines = [s for s in p.stdout.split('\n') if s.startswith('0x')]
+    if not lines:
+        raise RuntimeError('no TValue of {}: {}'.format(lua_value,
+                                                        p.stdout[-2000:]))
+    return int(lines[-1], 16)
+
+
+def dual_number_mode():
+    '''LJ_DUALNUM of the build: the integer 42 is a TValue with the int
+    in its low word (setintV(), lj_obj.h), else the double 42.0.
+    ffi.abi('dualnum') is no source: the LuaJIT of 3.0, 3.1 and 3.4 has no
+    such option and says false for it.'''
+    bits = tvalue_bits(42)
+    if bits == 0x4045000000000000:          # 42.0
+        return False
+    if bits & 0xffffffff == 42:
+        return True
+    raise RuntimeError('the TValue of 42 is neither: {:#x}'.format(bits))
+
+
 _abi = lua_eval("local ffi = require('ffi') "
-                "print(ffi.abi('gc64'), ffi.abi('dualnum'), jit.arch, "
-                "_TARANTOOL)").split()
+                "print(ffi.abi('gc64'), jit.arch, _TARANTOOL)").split()
 IS_GC64 = _abi[0] == 'true'
-IS_DUALNUM = _abi[1] == 'true'
-ARCH = _abi[2]                  # x64 or arm64
-VERSION = _abi[3]               # 3.9.0-0-g...
+IS_DUALNUM = dual_number_mode()
+ARCH = _abi[1]                  # x64 or arm64
+VERSION = _abi[2]               # 3.9.0-0-g...
 VERSION_TUPLE = tuple(int(x) for x in VERSION.split('-')[0].split('.'))
 
 
