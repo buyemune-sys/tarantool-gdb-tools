@@ -120,6 +120,11 @@ jobs:
           exit "${PIPESTATUS[0]}"
         shell: bash
 
+      # extensions.json read back from the gdb of each runner (12, 15, 17).
+      - name: The manifest in gdb of ${{ matrix.os }}
+        if: ${{ !cancelled() }}
+        run: tests/manifest/check.py gdb
+
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

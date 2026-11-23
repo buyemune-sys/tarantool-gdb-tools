@@ -1,0 +1,32 @@
+name: manifest
+
+# extensions.json, the static checks (tests/manifest/check.py static):
+# the schema, the files, the `after` order, and the CI matrices that
+# cover the tarantool range and the architectures of each file in each
+# of its debuggers; and the tests of the checks themselves.  What each
+# file registers is checked in the jobs that run it: test.yml, dbg.yml
+# (gdb) and lldb.yml (lldb).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The manifest
+        run: tests/manifest/check.py static
+
+      # The checks catch a wrong manifest; the tests that load the files
+      # into gdb are skipped here (no tarantool), they run in dbg.yml.
+      - name: Tests of the checks
+        working-directory: tests/manifest
+        run: python3 -m unittest -v test_check

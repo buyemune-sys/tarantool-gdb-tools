@@ -1,10 +1,12 @@
 name: lldb
 
 # luajit_gdb.py in lldb against the official static builds of every
-# Tarantool CE 3.x minor (amd64): LuaJIT's own debugger tests in their
-# lldb mode (tests/dbg/run.sh upstream, live), with lldb 18 (the one of
-# Ubuntu 24.04) and lldb 22 (apt.llvm.org), and tests/dbg/test_luajit.py
-# run by driver_lldb.py (every command live and on a core) with 22.
+# Tarantool CE 3.x minor, amd64 and arm64: LuaJIT's own debugger tests
+# in their lldb mode (tests/dbg/run.sh upstream, live), with lldb 18 (the
+# one of Ubuntu 24.04) and lldb 22 (apt.llvm.org), and
+# tests/dbg/test_luajit.py run by driver_lldb.py (every command live and
+# on a core) with 22.  extensions.json promises luajit_gdb.py in lldb on
+# both architectures, as in gdb (tests/manifest/check.py).
 on:
   push:
   pull_request:
@@ -17,28 +19,35 @@ on:
         default: all
         type: choice
         options: [all, 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2, 3.9.0]
+      arch:
+        description: 'Architecture, or "all"'
+        default: all
+        type: choice
+        options: [all, amd64, arm64]
 
 permissions:
   contents: read
 
 jobs:
   lldb:
-    name: tarantool ${{ matrix.version }} lldb ${{ matrix.lldb }}
-    runs-on: ubuntu-24.04
-    # New: report, do not fail the workflow, until it is green.
+    name: tarantool ${{ matrix.version }} ${{ matrix.arch }} lldb ${{ matrix.lldb }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    # New (arm64: never run before): report, do not fail the workflow,
+    # until it is green.
     continue-on-error: true
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         version: ${{ fromJSON((inputs.version || 'all') == 'all' && '["3.0.2", "3.1.2", "3.2.4", "3.3.5", "3.4.2", "3.5.2", "3.6.4", "3.7.2", "3.8.2", "3.9.0"]' || format('["{0}"]', inputs.version)) }}
+        arch: ${{ fromJSON((inputs.arch || 'all') == 'all' && '["amd64", "arm64"]' || format('["{0}"]', inputs.arch)) }}
         lldb: [18, 22]
     env:
       DBG_KEEP: 1
       DBG_DEBUGGER: lldb
       DBG_LLDB: lldb-${{ matrix.lldb }}
       # The same download as test.yml and dbg.yml: the cache is shared.
-      DL: ${{ github.workspace }}/.ljbt-dl/${{ matrix.version }}-amd64
+      DL: ${{ github.workspace }}/.ljbt-dl/${{ matrix.version }}-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -59,13 +68,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DL }}
-          key: tarantool-${{ matrix.version }}-amd64-v1
+          key: tarantool-${{ matrix.version }}-${{ matrix.arch }}-v1
 
       - name: Fetch Tarantool ${{ matrix.version }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          tests/fetch.sh ${{ matrix.version }} amd64 "$DL" >> "$GITHUB_ENV"
+          tests/fetch.sh ${{ matrix.version }} ${{ matrix.arch }} "$DL" >> "$GITHUB_ENV"
           echo "TMPDIR=${{ runner.temp }}/dbg" >> "$GITHUB_ENV"
           mkdir -p "${{ runner.temp }}/dbg"
 
@@ -82,11 +91,17 @@ jobs:
         run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
         shell: bash
 
+      # What luajit_gdb.py registers in lldb is what extensions.json says.
+      - name: The manifest in lldb
+        if: ${{ !cancelled() }}
+        run: tests/manifest/check.py lldb 2>&1 | tee "$TMPDIR/run-manifest.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
           {
-            echo "### lldb ${{ matrix.lldb }}, tarantool ${{ matrix.version }}"
+            echo "### lldb ${{ matrix.lldb }}, tarantool ${{ matrix.version }} ${{ matrix.arch }}"
             echo '```'
             grep -hE '^(FAIL|ERROR):|^Ran |^OK|^FAILED' "$TMPDIR"/run-*.log
             echo '```'
@@ -96,6 +111,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: lldb-logs-${{ matrix.version }}-lldb${{ matrix.lldb }}
+          name: lldb-logs-${{ matrix.version }}-${{ matrix.arch }}-lldb${{ matrix.lldb }}
           path: ${{ runner.temp }}/dbg
           retention-days: 14

@@ -121,6 +121,14 @@ jobs:
           exit "$rc"
         shell: bash
 
+      # What each file registers in gdb is what extensions.json says; the
+      # tests of that check, with this binary (a wrong manifest fails).
+      - name: The manifest in gdb
+        if: ${{ !cancelled() }}
+        run: |
+          tests/manifest/check.py gdb
+          cd tests/manifest && python3 -m unittest -v test_check
+
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
