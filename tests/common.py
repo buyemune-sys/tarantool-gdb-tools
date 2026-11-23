@@ -275,7 +275,7 @@ def check_doc(rec, allow_warnings=False):
         w = warnings(doc)
         if w:
             probs.append('"!!" on a consistent stack: ' + '; '.join(w))
-    links = [e['link'] for e in entries(doc) if e.get('link')]
+    links = [e['link'] for e in entries(doc) + doc['tail'] if e.get('link')]
     dups = set(x for x in links if links.count(x) > 1)
     if dups:
         probs.append('Lua frames shown twice: {}'.format(sorted(dups)))
@@ -286,8 +286,10 @@ def check_doc(rec, allow_warnings=False):
         if n is not None and n != s['links'] + 1:
             probs.append('L={}: lj-stack has {} frames, lj-bt walked {} '
                          'links'.format(s['L'], n, s['links']))
-        shown = len([e for e in entries(doc) if e.get('L') == s['L'] and
-                     e['kind'] == 'lua'])
+        # Also the frames of the tail: those of no VM entry on this C
+        # stack, under their "!!" or "--" header.
+        shown = len([e for e in entries(doc) + doc['tail']
+                     if e.get('L') == s['L'] and e['kind'] == 'lua'])
         if shown != s['links'] - s['hidden']:
             probs.append('L={}: {} Lua frames shown, {} links - {} hidden'
                          .format(s['L'], shown, s['links'], s['hidden']))

@@ -50,13 +50,39 @@ def violations(rec):
     m = C.cframes_mismatch(doc, rec['bt'])
     if m:
         probs.append('C frames: ' + m)
-    if C.warnings(doc):
-        return probs            # Marked: whatever it shows is flagged.
-    if not outer_found(doc):
+    # A mark excuses what it marks, an inconsistent Lua stack: the outer
+    # frame may be out of reach.  The rest holds on any stack: each frame
+    # link once, synthetic frames after traces, the frames of the states
+    # lj-bt calls consistent (check_doc skips the broken ones).
+    if not C.warnings(doc) and not outer_found(doc):
         probs.append('outer Lua frame not found, no "!!"')
     probs += [p for p in C.check_doc(rec, allow_warnings=True)
               if not p.startswith('C frames')]
     return probs
+
+
+def stop_class(doc):
+    '''Where a stop is: 'bc' in a bytecode handler, 'trace' in machine
+    code of a trace, 'c' in C, 'vm' elsewhere in the VM; with a mark or
+    clean.'''
+    f = doc['frames'][0] if doc and doc['frames'] else None
+    if f is None:
+        return None
+    if f['kind'] == 'trace':
+        k = 'trace'
+    elif f['kind'] in ('vm', 'vm?'):
+        k = 'bc' if (f['name'] or '').startswith('lj_BC_') else 'vm'
+    else:
+        k = f['kind']
+    return k, 'marked' if C.warnings(doc) else 'clean'
+
+
+# Clean stops of each class a run must have, by JIT mode, once it has
+# MIN_CLASS_STOPS stops or more (of 100 stops on x86_64 3.9: JIT off ~17
+# in bytecode handlers, ~73 in C; JIT on ~8 in traces, ~75 in C, ~3 in
+# handlers - too few to require).
+MIN_CLASS_STOPS = 100
+CLASSES = {'off': ('bc', 'c'), 'on': ('trace', 'c')}
 
 
 class StopsMixin(object):
@@ -75,9 +101,12 @@ class StopsMixin(object):
                                 'only {} stops'.format(len(recs)))
         bad = []
         lua_stops = 0
+        classes = {}
         for i, rec in enumerate(recs):
             if rec.get('ljbt') and C.entries(rec['ljbt']):
                 lua_stops += 1
+            k = stop_class(rec.get('ljbt'))
+            classes[k] = classes.get(k, 0) + 1
             v = violations(rec)
             if v:
                 bad.append(dict(rec, stop=i, violations=v))
@@ -90,6 +119,14 @@ class StopsMixin(object):
         self.assertGreater(lua_stops, 0, 'no stop with Lua frames')
         self.assertEqual([], [(b['stop'], b['violations']) for b in bad],
                          'dumps: ' + wd.file('violations.jsonl'))
+        if len(recs) >= MIN_CLASS_STOPS:
+            # The checks above did not go vacuous: there are clean stops
+            # where each part of lj-bt works (a mark lifts the outer frame
+            # check, a stop with nothing to check checks nothing).
+            for k in CLASSES[self.jit]:
+                self.assertGreater(classes.get((k, 'clean'), 0), 0,
+                                   'no clean stop in {}: {}'.format(
+                                       k, classes))
 
 
 for _jit in C.jit_modes():
