@@ -226,7 +226,8 @@ LuaJIT's gdb (and lldb) extension in one version for every Tarantool 3.x, from 3
 | `upstream` | LuaJIT's own debugger tests, vendored unchanged in `tests/dbg/upstream/` (see its README), run against tarantool; what cannot pass there is skipped with the reason |
 | `tarantool` | `tarantool-gdb.py`: every command and printer, live and on a core, see [below](#tarantool-gdbpy) |
 | `upstream-tarantool` | Tarantool's own tests of the extension, vendored unchanged (see `tests/dbg/upstream/README.md`), with pytest |
-| `all` | all four |
+| `cores` | the stacks of the threads of tarantool in a `gcore` core, a `gcore-pages` core and the kernel's core of the same stop, see [below](#gcore-and-the-thread-stacks-glibc-242) |
+| `all` | all five |
 
 ```
 export $(tests/fetch.sh 3.9.0 amd64 ~/tarantool-3.9.0)
@@ -306,6 +307,19 @@ What to do, any of:
 - the kernel's core, where the process may die.
 
 What does not help (measured on Ubuntu 26.04): `set use-coredump-filter off`, `set dump-excluded-mappings on`; `GLIBC_TUNABLES`: glibc has no tunable for this guard (it takes a `PROT_NONE` mapping only where the `madvise` fails), and `glibc.mem.decorate_maps=1`, `glibc.pthread.stack_hugetlb=0` or `glibc.pthread.stack_cache_size=0` change nothing.
+
+### Tests
+
+The group `cores` of `tests/dbg/run.sh` (`tests/dbg/test_cores.py`) runs tarantool with `box.cfg` (the `wal`, `iproto`, `applier` and `coio` threads) to a stop and takes three cores there: `gcore`, `gcore-pages` and the kernel's (`signal SIGQUIT`). A stack is kept if the 1 KiB above `$sp` and the backtrace are the live ones (in the kernel's core, taken after the threads ran again: if the 1 KiB is not zeroes and the backtrace goes down to the live outermost frame).
+
+| Test | What |
+|---|---|
+| `test_guard_pages` | the cause: the stack mappings of the threads have unreadable pages where glibc 2.42+ runs on Linux 6.13+, and nowhere else |
+| `test_gcore` | `gcore` keeps every stack; an expected failure where the stacks have such pages and gdb is older than 18.1, with the reason on stderr (`known-broken: ...`) |
+| `test_gcore_pages` | `gcore-pages` keeps every stack, and reads pages again only where `gcore` lost them |
+| `test_kernel_core` | the kernel's core keeps every stack; skipped with the reason where the kernel writes none (`core_pattern` pipes to a program, or the hard `RLIMIT_CORE` is 0) |
+
+`DBG_CORES_SUMMARY=FILE` writes the facts and the results as JSON. `DBG_GDB` runs the tests with another gdb, e.g. one built from source.
 
 ## License
 
