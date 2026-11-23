@@ -22,11 +22,16 @@ TRANSITIONS = ['call', 'tail', 'pcall', 'xpcall', 'resume', 'wrap', 'sort',
 
 
 class Chain(object):
-    def __init__(self, seq, transitions, target, oracle):
+    def __init__(self, seq, transitions, target, oracle, hot=False):
         self.seq = seq
         self.transitions = transitions
         self.target = target        # 'c' (lbox_session_exists) or 'ffi'
         self.oracle = oracle and 'jit' not in transitions
+        # The hot loop of 'jit' makes its last call (the one that goes on
+        # down the chain) only once the loop runs in a trace (H.hot): for
+        # chains that must stop in one.  Else after 100 iterations, which
+        # is usually, not surely, past the start of the trace.
+        self.hot = hot
         self.model = []             # Expected tokens, oldest first.
         self.jit = 'jit' in transitions
         self.has_fiber = 'fiber' in transitions
@@ -217,6 +222,24 @@ class Program(object):
                 e('  local r = ch:get()')
                 e('  return r')
                 extra = [('RESET',), ('L', db, sb)]
+            elif t == 'jit' and ch.hot:
+                # Rounds of the hot loop until it runs in a trace (at most
+                # 30, 3000 iterations: a hot counter up to 6000); then its
+                # last iteration goes on down the chain, in the trace.  The
+                # rounds are a repeat loop: H.hot looks at the last FORL.
+                e('  local args = {}')
+                e('  for i = 1, 100 do args[i] = 2000 end')
+                e('  local r')
+                e('  local round = 0')
+                e('  repeat')
+                e('    round = round + 1')
+                e('    if round == 30 or H.hot({}) then args[100] = x end'
+                  .format(F))
+                e('    for i = 1, 100 do')
+                s = e('      r = {}(args[i])'.format(N))
+                e('    end')
+                e('  until args[100] == x')
+                e('  return r')
             elif t == 'jit':
                 # NAMES[2000] and NAMES[4000 + seq] are both in the hash
                 # part: no guard on the key leaves the trace at i == 100.

@@ -48,9 +48,11 @@ def fixed_program(jit, driver, first_seq=1):
     chains = []
     for i, tr in enumerate(FIXED):
         target = 'c' if i % 2 == 0 else 'ffi'
+        hot = False
         if tr[0] == 'jit' and i >= 18:
-            target = 'ffi'          # Called from the trace's machine code.
-        ch = gen.Chain(first_seq + i, tr, target, oracle=True)
+            target = 'ffi'          # Called from the trace's machine code,
+            hot = True              # once the loop surely runs in a trace.
+        ch = gen.Chain(first_seq + i, tr, target, oracle=True, hot=hot)
         prog.add(ch)
         chains.append(ch)
     return prog, chains

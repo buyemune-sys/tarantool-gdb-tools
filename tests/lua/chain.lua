@@ -33,6 +33,31 @@ function H.name(seq)
   NAMES[4000 + seq] = string.rep('x', 40 + seq)
 end
 
+-- The last numeric for loop of fn runs in a trace (its FORL is a JFORL
+-- now), or never will: the JIT is off or the loop is blacklisted (IFORL).
+-- A loop gets its trace after as many iterations as its hot counter says,
+-- one of 64 that all bytecode shares (lj_dispatch.h hotcount_get), and an
+-- aborted trace anywhere may leave a penalty of 72 and more there
+-- (lj_trace.c penalty_pc): no fixed count is surely enough.
+local jutil = require('jit.util')
+local vmdef = require('jit.vmdef')
+function H.hot(fn)
+  if not jit.status() then return true end
+  local last
+  local pc = 1
+  while true do
+    local ins = jutil.funcbc(fn, pc)
+    if ins == nil then break end
+    local op = bit.band(ins, 0xff)
+    local name = vmdef.bcnames:sub(op * 6 + 1, op * 6 + 6):match('%S+')
+    if name == 'FORL' or name == 'IFORL' or name == 'JFORL' then
+      last = name
+    end
+    pc = pc + 1
+  end
+  return last == 'JFORL' or last == 'IFORL'
+end
+
 local function append(file, rec)
   local fh = assert(io.open(workdir .. '/' .. file, 'a'))
   fh:write(json.encode(rec) .. '\n')

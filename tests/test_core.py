@@ -44,7 +44,8 @@ class CoreMixin(object):
         prog = gen.Program(cls.jit == 'on', 'main')
         cls.chains = []
         for i, (tr, target) in enumerate(CHAINS):
-            ch = gen.Chain(i + 1, tr, target, oracle=False)
+            ch = gen.Chain(i + 1, tr, target, oracle=False,
+                           hot=(i + 1 == HOP))
             prog.add(ch)
             cls.chains.append(ch)
         seqs = ','.join(str(ch.seq) for ch in cls.chains)
