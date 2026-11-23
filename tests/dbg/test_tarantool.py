@@ -147,6 +147,15 @@ else:
     TXN_FIRST = '((struct txn *)((char *)txm.all_txs.next - ' \
         '(long)&((struct txn *)0)->in_all_txs))'
 
+QUORUM = 'replicaset_on_quorum_change' if H.VERSION_TUPLE >= (3, 6) \
+    else 'replicaset_on_quorum_gain'
+# The entries of the list table that resolve: symbols and entry infos.
+LUT_DUMP = ("python RlistLut._init(); StailqLut._init(); "
+            "gdb.write('\\n'.join(sorted(set(list(RlistLut._symbols_map) + "
+            "[str(e) for lut in (RlistLut, StailqLut) "
+            "for m in lut._containers_map.values() for e in m.values()]))) "
+            "+ '\\n')")
+
 WALK = 40       # more tt-list-walk steps than there are fibers
 
 BOX_CMDS = [
@@ -177,6 +186,9 @@ BOX_CMDS = [
     ('stmts', 'tt-list -entry-info txn_stmt::next -- {}->stmts'.format(
         TXN_FIRST)),
     ('stmts.len', 'eval:$dbg_stailq_len(&{}->stmts)'.format(TXN_FIRST)),
+    ('quorum', 'tt-list -fields run -- ' + QUORUM),
+    ('quorum.len', 'eval:$dbg_rlist_len(&{})'.format(QUORUM)),
+    ('lut', LUT_DUMP),
     ('txn_cache', 'print txn_cache'),
     ('txn_cache.len', 'eval:$dbg_stailq_len(&txn_cache)'),
     ('token', 'print tuple_formats[$t->format_id]->fields.root'),
@@ -685,8 +697,31 @@ class TestLists(DbgCase):
         self.assertIn('rlist<fiber::link> of length {},'.format(n),
                       self.out(BOX, 'walk.{}'.format(n + 2)))
 
-    @unittest.skipIf(H.VERSION_TUPLE < (3, 4),
-                     'no tx_manager::all_txs in the list table yet')
+    def test_quorum(self):
+        # The quorum triggers (gain and loss up to 3.5, change since 3.6):
+        # empty here, but the entries are known.
+        n = self.value(BOX, 'quorum.len')
+        self.assertIn('rlist<trigger::link> of length {},'.format(n),
+                      self.out(BOX, 'quorum'))
+
+    def test_lut(self):
+        # The entries of each release are in the table where its DWARF
+        # has them.
+        lut = set(self.out(BOX, 'lut').split())
+        v = H.VERSION_TUPLE
+        want = {
+            'replicaset_on_quorum_gain': v < (3, 6),
+            'replicaset_on_quorum_loss': v < (3, 6),
+            'replicaset_on_quorum_change': v >= (3, 6),
+            'txns': v >= (3, 4),
+            'txn::in_all_txs': v < (3, 4),
+            'vy_tx::in_writers': v < (3, 4),
+            'memtx_tuple::in_gc': v < (3, 6),
+            'memtx_block::in_gc': v >= (3, 6),
+            'fiber::link': True,
+        }
+        self.assertEqual(dict((k, k in lut) for k in want), want)
+
     def test_txns(self):
         o = BOX.oracle()
         out = self.out(BOX, 'txns')

@@ -85,6 +85,17 @@ def find_value(sym):
     except Exception:
         return None
 
+def symbol_exists(name):
+    if gdb.lookup_global_symbol(name) is not None:
+        return True
+    if hasattr(gdb, 'lookup_static_symbol') and \
+            gdb.lookup_static_symbol(name) is not None:
+        return True
+    try:
+        return gdb.lookup_symbol(name)[0] is not None
+    except gdb.error:
+        return False
+
 def find(predicate, iterable, default=None):
     return next(filter(predicate, iterable), default)
 
@@ -1611,6 +1622,8 @@ class ListLut(object):
     def __build_symbols_map(symbols):
         ret = {}
         for sym, entry in symbols:
+            if not symbol_exists(sym):
+                continue        # Not in this build.
             try:
                 ret[sym] = ContainerFieldInfo(entry)
             except Exception as e:
@@ -1751,6 +1764,10 @@ class RlistLut(ListLut):
         ('on_shutdown_trigger_list', 'on_shutdown_trigger::link'),
         ('popen_head', 'popen_handle::list'),
         ('replicaset_on_quorum_change', 'trigger::link'),
+        # Up to 3.5; an entry whose symbol, type or field the DWARF lacks
+        # is left out of the table.
+        ('replicaset_on_quorum_gain', 'trigger::link'),
+        ('replicaset_on_quorum_loss', 'trigger::link'),
         ('session_on_auth', 'trigger::link'),
         ('session_on_connect', 'trigger::link'),
         ('session_on_disconnect', 'trigger::link'),
@@ -1809,6 +1826,7 @@ class RlistLut(ListLut):
         ('swim::round_queue', 'swim_member::in_round_queue'),
         ('swim_scheduler::queue_output', 'swim_task::in_queue_output'),
         ('tx_manager::read_view_txs', 'txn::in_read_view_txs'),
+        ('tx_manager::all_txs', 'txn::in_all_txs'), # up to 3.3, then txns
         ('tx_manager::all_stories', 'memtx_story::in_all_stories'),
         ('tx_manager::traverse_all_stories', 'memtx_story::in_all_stories'), # struct rlist*
         ('txn::conflict_list', 'tx_conflict_tracker::in_conflict_list'),
@@ -1841,6 +1859,7 @@ class RlistLut(ListLut):
         ('vy_recovery::lsms', 'vy_lsm_recovery_info::in_recovery'),
         ('vy_tx::on_destroy', 'trigger::link'),
         ('vy_tx_manager::read_views', 'vy_read_view::in_read_views'),
+        ('vy_tx_manager::writers', 'vy_tx::in_writers'), # up to 3.3
         ('vy_write_iterator::src_list', 'vy_write_src::in_src_list'),
         ('wal_writer::watchers', 'wal_watcher::next'),
         ('watchable::pending_watchers', 'watcher::in_idle_or_pending'),
@@ -1920,8 +1939,10 @@ class StailqLut(ListLut):
         ('fiber_pool::output', 'cmsg::fifo'),
         ('iproto_stream::pending_requests', 'iproto_msg::in_stream'),
         ('MemtxAllocator<Allocator>::gc', 'memtx_block::in_gc'),
+        ('MemtxAllocator<Allocator>::gc', 'memtx_tuple::in_gc'), # up to 3.5
         ('memtx_engine::gc_queue', 'memtx_gc_task::link'),
         ('memtx_block_rv_list::blocks', 'memtx_block::in_gc'),
+        ('memtx_tuple_rv_list::tuples', 'memtx_tuple::in_gc'), # up to 3.5
         ('relay::pending_gc', 'relay_gc_msg::in_pending'),
         ('swim::event_queue', 'swim_member::in_event_queue'),
         ('txn::stmts', 'txn_stmt::next'),
