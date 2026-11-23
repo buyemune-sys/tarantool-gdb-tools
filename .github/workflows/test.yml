@@ -69,8 +69,10 @@ jobs:
           echo "TMPDIR=${{ runner.temp }}/ljbt" >> "$GITHUB_ENV"
           mkdir -p "${{ runner.temp }}/ljbt"
 
-      - name: Layers oracle, core, random, tail, cli, env
-        run: tests/run.sh oracle core random tail cli env 2>&1 | tee "$TMPDIR/run-main.log"; exit "${PIPESTATUS[0]}"
+      # window needs no sysprof: its random stops are those of setitimer,
+      # the stops on arm64.
+      - name: Layers oracle, core, random, tail, cli, env, window
+        run: tests/run.sh oracle core random tail cli env window 2>&1 | tee "$TMPDIR/run-main.log"; exit "${PIPESTATUS[0]}"
         shell: bash
 
       - name: Layers stops and crash
@@ -80,7 +82,7 @@ jobs:
 
       - name: Layers stops and crash (skipped)
         if: matrix.arch == 'arm64'
-        run: echo "::notice::stops and crash are skipped on arm64 - LuaJIT has no sysprof (nor memprof) there, and both layers run on sysprof"
+        run: echo "::notice::stops and crash are skipped on arm64 - LuaJIT has no sysprof (nor memprof) there, and both layers run on sysprof; the window layer stops at random points with setitimer instead"
 
       # The rust group: the images come with Rust; the tarantool crate
       # needs rustc 1.89, an older or missing one is replaced by stable.

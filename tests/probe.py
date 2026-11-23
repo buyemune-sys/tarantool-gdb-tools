@@ -1,6 +1,7 @@
 # gdb side of the lj-bt tests: sourced after luajit_dbg.py and lj_bt.py.
 #
-#   ljbt-probe FILE [--filter] [--core] [--thread-hop SEQS]
+#   ljbt-probe FILE [--filter] [--core] [--thread-hop SEQS] [--seq N]
+#              [--tag T]
 #
 # appends one JSON line to FILE: the `lj-bt --json` document, the frames
 # of `bt -no-filters` (and without the trace unwinder, if a trace frame
@@ -140,6 +141,11 @@ class ProbeCommand(gdb.Command):
                 fh.write('{} pc={}\n'.format(name, pc))
         stage('start')
         rec = {'seq': probe_seq(), 'error': None}
+        # --seq N --tag T: a stop that is not at a target (window.py).
+        if '--seq' in argv:
+            rec['seq'] = int(argv[argv.index('--seq') + 1])
+        if '--tag' in argv:
+            rec['tag'] = argv[argv.index('--tag') + 1]
         try:
             th = gdb.selected_thread()
             rec['thread'] = th.num if th else None

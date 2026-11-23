@@ -1,6 +1,7 @@
 -- Layer 3 workload: mixed C/Lua activity for random stops (SIGPROF of
--- sysprof in mode D, which counts VM states and walks no stack).
--- Runs until killed.  Work directory: LJBT_WORKDIR.
+-- sysprof in mode D, which counts VM states and walks no stack; with
+-- LJBT_TIMER, of setitimer).  Runs until killed.  Work directory:
+-- LJBT_WORKDIR.
 local fiber = require('fiber')
 local json = require('json')
 local netbox = require('net.box')
@@ -58,5 +59,26 @@ loop('errors', function(i)
   pcall(error, 'lua error ' .. i)
 end)
 
-assert(misc.sysprof.start({mode = 'D', interval = 1}))
+if os.getenv('LJBT_TIMER') then
+  -- The window layer: SIGPROF every 1 ms of CPU time from setitimer, no
+  -- sysprof (LuaJIT has none on arm64).  The handler is getpid, a C
+  -- function that ignores its argument: gdb steps into it to stop under
+  -- the frame of a signal.
+  local ffi = require('ffi')
+  ffi.cdef([[
+    struct ljbt_timeval { long sec; long usec; };
+    struct ljbt_itimerval { struct ljbt_timeval interval, value; };
+    int setitimer(int which, const struct ljbt_itimerval *nv,
+                  struct ljbt_itimerval *ov);
+    typedef void (*ljbt_handler_t)(int);
+    ljbt_handler_t signal(int signum, ljbt_handler_t handler);
+    int getpid(void);
+  ]])
+  local SIGPROF, ITIMER_PROF = 27, 2
+  ffi.C.signal(SIGPROF, ffi.cast('ljbt_handler_t', ffi.C.getpid))
+  local it = ffi.new('struct ljbt_itimerval', {{0, 1000}, {0, 1000}})
+  assert(ffi.C.setitimer(ITIMER_PROF, it, nil) == 0)
+else
+  assert(misc.sysprof.start({mode = 'D', interval = 1}))
+end
 while true do fiber.sleep(1) end

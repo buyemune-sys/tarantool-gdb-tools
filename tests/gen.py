@@ -82,9 +82,12 @@ def lua_quote(s):
 
 class Chain(object):
     def __init__(self, seq, transitions, target, oracle, hot=False,
-                 depth=DEPTH):
+                 depth=DEPTH, window=False):
         self.seq = seq
         self.depth = depth          # Of the recursion of 'deep'.
+        # The window layer: F_0 calls box.session.exists(2000 + seq), the
+        # mark, on the line of its step, right before it.
+        self.window = window
         self.transitions = transitions
         self.target = target        # 'c' (lbox_session_exists) or 'ffi'
         self.oracle = oracle and 'jit' not in transitions
@@ -97,6 +100,9 @@ class Chain(object):
         self.attrs = []             # Their attributes (the header).
         self.path = None            # The generated file (run_chains).
         self.loaded = set()         # (chunk, defline) of loaded functions.
+        # (tokens of the model under it, token) of a frame on top of F_k
+        # during its step only; after render, the stacks with them.
+        self.transient = []
         self.jit = 'jit' in transitions
         self.has_fiber = 'fiber' in transitions
 
@@ -178,7 +184,10 @@ class Program(object):
             # part before is the stack of the creator: fiber.create runs
             # the new fiber at once, the creator waits in it, at the line
             # of its call.
-            full = [t for t, _ in bottom] + ch.model
+            ch.bottom = [t for t, _ in bottom]
+            full = ch.bottom + ch.model
+            ch.transient = [full[:len(bottom) + i] + [tok]
+                            for i, tok in ch.transient]
             fulla = [dict(ftype=by[0], how=by[1], chunk=None, state=0,
                           co=False, jit=False) for _, by in bottom] + \
                 ch.attrs
@@ -218,6 +227,14 @@ class Program(object):
         def new_state(co):
             st.update(state=st['state'] + 1, co=co)
 
+        def mark(k, line):
+            # F_0 at the line of its step (a tail call may remove it).
+            if k == 0:
+                ch.first = ('L', d, line)
+            if ch.window and k == 0:
+                self.lines[line - 1] = '  local m = box.session.exists(' \
+                    'x - 2000) ' + self.lines[line - 1].lstrip()
+
         # How F_k is called and whether its call site names it.
         incoming = (BY_PCALL, True)     # F_0 is called by pcall in D().
         pending = None              # (defline, resolvable) of a tail run.
@@ -252,7 +269,7 @@ class Program(object):
             d = e('function _G.{}(x{})'.format(F, ', ...' if t == 'vararg'
                                                  else ''))
             if t == 'tail':
-                e('  return {}(x)'.format(N))
+                mark(k, e('  return {}(x)'.format(N)))
                 e('end')
                 if pending is None:
                     pending = (d, incoming[1])
@@ -264,6 +281,9 @@ class Program(object):
             extra = []
             nxt = (BY_LUA, True)
             next_pending = None
+            # Frames that run on top of F_k during its step and are gone
+            # at the stop (the window layer sees them).
+            trans = []
             if t == 'jit':
                 st['jit'] = True
             if t == 'call':
@@ -328,6 +348,7 @@ class Program(object):
                         't.w' if t == 'tailfield' else 'w'))
                 e('  return r')
                 next_pending = (dw, True)
+                trans = [('L', dw, None)]
             elif t == 'tailmt':
                 # The head W is __call of a table: the call site has the
                 # table, nothing to verify, no heuristic line.
@@ -336,17 +357,19 @@ class Program(object):
                 s = e('  local r = t(x)')
                 e('  return r')
                 next_pending = (dw, False)
+                trans = [('L', dw, None)]
             elif t == 'tailre':
                 # W is called through the global G, reassigns it and
                 # tail-calls F_{k+1}: the heuristic names what G holds now,
                 # X (README: wrong when the global was reassigned).
                 dx = e('  local function X(y) return y end')
-                e('  local function W(y) G{} = X return {}(y) end'.format(
-                    F, N))
+                dw = e('  local function W(y) G{} = X return {}(y) end'
+                       .format(F, N))
                 e('  G{} = W'.format(F))
                 s = e('  local r = G{}(x)'.format(F))
                 e('  return r')
                 next_pending = (dx, True)
+                trans = [('L', dw, None)]
             elif t == 'long':
                 # The call far from the start of the function: line info
                 # of 16 or 32 bits (the next functions start past 65536).
@@ -494,8 +517,10 @@ class Program(object):
                 e('  return r')
                 extra = [(('B', 'ffi.meta.__call'), BY_LUA),
                          (('L', dc, sc), BY_FFI_CALLBACK)]
+                trans = [('B', 'ffi.clib.__index')]     # C.qsort
             else:
                 raise ValueError(t)
+            mark(k, s)
             e('end')
             for line in after:
                 e(line)
@@ -503,6 +528,7 @@ class Program(object):
                 put(('H', pending[0]))
             pending = next_pending
             put(('L', d, s), incoming[0])
+            ch.transient.extend((len(model), tok) for tok in trans)
             for x in extra:
                 if x[0][0] == 'NEW':
                     new_state(x[0][1])

@@ -14,7 +14,10 @@
 #   env      surroundings: missing extension, no DWARF, symbol-file, example
 #   rust     Lua and Rust modules (tests/rust) calling each other; builds
 #            them with cargo, skipped without it
-#   all      everything; default: oracle core random stops tail cli env rust
+#   window   every instruction of the VM's windows of chain steps (stepi),
+#            and SIGPROF stops of setitimer without sysprof
+#   all      everything; default: oracle core random stops tail cli env
+#            window rust
 #
 # LJBT_LJ_BT runs the tests against another lj_bt.py (an older one, to see
 # a new test fail before its fix).
@@ -27,8 +30,9 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 : "${LJBT_TARANTOOL:?set LJBT_TARANTOOL to a tarantool binary with DWARF}"
 : "${LJBT_LUAJIT_DBG:?set LJBT_LUAJIT_DBG to luajit_dbg.py of that build}"
-[ $# -eq 0 ] && set -- oracle core random stops tail cli env rust
-[ "$*" = all ] && set -- oracle core random stops tail cli env rust crash
+[ $# -eq 0 ] && set -- oracle core random stops tail cli env window rust
+[ "$*" = all ] && set -- oracle core random stops tail cli env window rust \
+    crash
 cd "$here" || exit 1
 rc=0
 for g in "$@"; do
@@ -42,6 +46,7 @@ for g in "$@"; do
     cli) set_args="test_cli" ;;
     env) set_args="test_env" ;;
     rust) set_args="test_rust" ;;
+    window) set_args="test_window" ;;
     *) echo "unknown group: $g" >&2; exit 2 ;;
     esac
     echo "### $g"

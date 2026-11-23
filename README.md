@@ -149,6 +149,7 @@ The last example leaves frames out (the gaps in the numbers); every line shown i
 | `cli` | `lj-bt` driven through gdb commands as a user does: every flag and wrong flags, repeated calls, the state of gdb around them, `thread N` and the iproto thread, a suspended coroutine, more C frames than `-n`, long local and upvalue names, VM helpers and the VM top, `tt-fiber` with `stepi` and the next stop in another fiber |
 | `env` | the surroundings: a LuaJIT extension missing names or not set up yet, a binary without DWARF (alone and with `symbol-file`), no enums or `lj_bc_mode` in DWARF, the walk limits, the bottoms of fiber stacks, other stop handlers, `examples/example.gdb` |
 | `rust` | Lua and Rust modules calling each other (see [below](#the-rust-group)), live and on `gcore` files; needs cargo, skipped without it |
+| `window` | lj-bt at every instruction of the VM between a mark and the target of a chain, through one step of each kind (`stepi`; C functions it calls run by `finish`): the C frames kept, every mismatch marked, else the Lua frames a stack the chain goes through, and none lost on the way down; and the stops of `stops` with `SIGPROF` from `setitimer` instead of sysprof, also stepped into the signal's handler (runs on arm64) |
 | `all` | everything; the default is all but `crash` |
 
 ```
@@ -158,7 +159,7 @@ LJBT_TT_GDB=<tarantool-src>/tools/tarantool-gdb.py \
 LJBT_SEEDS=200 LJBT_STOPS=500 tests/run.sh all
 ```
 
-`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only. `stops` and `crash` need sysprof and skip themselves without it (arm64). Breakpoint conditions on Lua numbers go through `$ljbt_arg(L, n)` of `tests/probe.py`: arm64 LuaJIT is dual-number, an integer there is an int32 with a tag, and `->n` would read its bits as a double.
+`luajit_dbg.py` must come from the same LuaJIT as the binary. A failed seed is replayed with `LJBT_SEED0=<n> LJBT_SEEDS=1 tests/run.sh random`. Temporary files go to `TMPDIR`; the box scenarios listen on unix sockets only. `stops` and `crash` need sysprof and skip themselves without it (arm64); `window` does not. Breakpoint conditions on Lua numbers go through `$ljbt_arg(L, n)` of `tests/probe.py`: arm64 LuaJIT is dual-number, an integer there is an int32 with a tag, and `->n` would read its bits as a double.
 
 `tests/fetch.sh <version> <amd64|arm64> <dest>` downloads the official static deb of a release, unpacks it, adds the gdb extensions of its sources and prints the three variables, so a release is tested with:
 
@@ -186,11 +187,11 @@ tests/run.sh
 |---|---|---|---|---|---|---|---|
 | LuaJIT extension | `luajit-gdb.py` | `luajit-gdb.py` | `luajit-gdb.py` | `luajit_dbg.py` | `luajit_dbg.py` | `luajit_dbg.py` | `luajit_dbg.py` |
 | amd64 (`ubuntu-24.04`) | all groups | all groups | all groups | all groups | all groups | all groups | all groups |
-| arm64 (`ubuntu-24.04-arm`) | oracle core random tail rust | same | same | same | same | same | same |
+| arm64 (`ubuntu-24.04-arm`) | oracle core random tail cli env window rust | same | same | same | same | same | same |
 
 - The binaries are the static debs of Tarantool's package repository (they carry DWARF), cached per version and architecture; the extensions come from the tag (`tools/tarantool-gdb.py`) and from tarantool/luajit at the tag's `third_party/luajit`.
 - On push and pull requests the long groups are cut: 50 seeds, 100 stops, two crash attempts of 20 s. The daily scheduled run takes 200 seeds, 500 stops, three attempts of 40 s.
-- On arm64 LuaJIT has no sysprof (nor memprof), so `stops` and `crash` are skipped, with a notice in the log. The arm64 layouts of `lj-bt` were never run before this CI, so the arm64 jobs are `continue-on-error` until they are green.
+- On arm64 LuaJIT has no sysprof (nor memprof), so `stops` and `crash` are skipped, with a notice in the log; the random stops of `window` come from `setitimer` and run there. The arm64 layouts of `lj-bt` were never run before this CI, so the arm64 jobs are `continue-on-error` until they are green.
 - The Rust modules of the `rust` group are built with the runner's Rust (stable is installed if it is missing or older than 1.89), cached per architecture together with the crates.
 - A failed job uploads its work directories (`gdb.log`, `probe.jsonl`, `violations.jsonl`) as the artifact `logs-<version>-<arch>`.
 
