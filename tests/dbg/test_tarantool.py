@@ -59,6 +59,9 @@ MP_SAMPLES = [
     ('error', 'msgpack.encode(err)'),
     # MP_TUPLE (7): format id 5, payload {1, 'x'}.
     ('tuple', "'\\xc7\\x05\\x07\\x05\\x92\\x01\\xa1x'"),
+    # A UUID of the reserved variant (111x): any 128 bits since 3.2.
+    ('uuid_variant', "'\\xd8\\x02' .. string.rep('\\x11', 8) .. '\\xe0' .. "
+                     "string.rep('\\x22', 7)"),
     # An extension type tarantool does not have, in an array.
     ('unknown_ext', "'\\x92\\xd4\\x63\\x2a\\x01'"),
 ]
@@ -802,6 +805,8 @@ class TestMsgPack(DbgCase):
 
     def test_uuid(self):
         self.assertEqual(self.mp('uuid'), BOX.oracle()['uuid'])
+        self.assertEqual(self.mp('uuid_variant'),
+                         '11111111-1111-1111-e022-222222222222')
 
     def test_datetime(self):
         self.assertEqual(self.mp('datetime'), BOX.oracle()['dt'])

@@ -998,19 +998,13 @@ if MP_UUID is not None:
         def __init__(self, val):
             self.val = val
 
-        def is_valid(self): # tt_uuid_validate
-            n = self.val['clock_seq_hi_and_reserved']
-            if (n & 0x80) != 0x00 and (n & 0xc0) != 0x80 and (n & 0xe0) != 0xc0:
-                return False
-            return True
-
+        # No validation: since 3.2 any 128 bits are a UUID (b0b32bff02,
+        # "uuid: relax UUID value validation"), the variant included.
         def __str__(self): # tt_uuid_to_string
-            sfx = '' if self.is_valid() else '[invalid]'
-            return '{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{}'.format(
+            return '{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}'.format(
                 self.val['time_low'], self.val['time_mid'], self.val['time_hi_and_version'],
                 self.val['clock_seq_hi_and_reserved'], self.val['clock_seq_low'], self.val['node'][0],
-                self.val['node'][1], self.val['node'][2], self.val['node'][3], self.val['node'][4], self.val['node'][5],
-                sfx)
+                self.val['node'][1], self.val['node'][2], self.val['node'][3], self.val['node'][4], self.val['node'][5])
 
     class UuidPrinter:
         def __init__(self, val):
