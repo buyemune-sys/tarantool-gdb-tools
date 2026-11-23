@@ -663,6 +663,19 @@ class _LLDBDebugger(Debugger):
 
     def lookup_global(self, symbol):
         sbvalue = self.target.FindFirstGlobalVariable(symbol)
+        if sbvalue.IsValid() and sbvalue.GetError().Fail():
+            # A __thread variable (tarantool_L since Tarantool 3.7):
+            # the target has no thread to read it in ("no thread to
+            # evaluate TLS within"), a frame has.  In a frame of
+            # assembly (lj_BC_FUNCC, a syscall stub) or of a library
+            # without debug info it is "out of scope": the first frame
+            # of the thread that has it.
+            thread = self.target.GetProcess().GetSelectedThread()
+            for frame in [thread.GetSelectedFrame()] + list(thread):
+                v = frame.EvaluateExpression(symbol)
+                if v.IsValid() and not v.GetError().Fail():
+                    sbvalue = v
+                    break
         tp = sbvalue.GetType()
         # XXX: LLDB in versions 17 - 19 can't use an array object
         # as the initializer for `lldb.value` since `GetValue()`

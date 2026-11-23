@@ -159,6 +159,9 @@ print(1)
     [('to_main', SWITCH.format('==')),
      ('main.L', 'eval:(long)tarantool_L')] +
     [('main.' + c, c) for c in MAIN_COMMANDS[:3]] +
+    # The frame of the VM, assembly: no scope for lldb to find a
+    # variable in.
+    [('main.frame1', 'frame 1'), ('main.up.lj-state', 'lj-state')] +
     [('to_coio', SWITCH.format('!=')),
      ('coio.L', 'eval:(long)tarantool_L')] +
     [('coio.' + c, c) for c in MAIN_COMMANDS])
@@ -188,6 +191,13 @@ class TestNoLuaState(DbgCase):
                 self.assertEqual(self.out(THREADS, 'coio.' + c),
                                  self.out(THREADS, 'main.' + c))
         self.assertNoPyError(THREADS)
+
+    def test_frame_of_the_vm(self):
+        # lj_BC_FUNCC selected: the commands find the lua_State as in
+        # the frame of a C function.
+        self.assertIsNone(self.raw(THREADS, 'main.frame1')['err'])
+        self.assertEqual(self.out(THREADS, 'main.up.lj-state'),
+                         self.out(THREADS, 'main.lj-state'))
 
 
 def check_gc(case, scen, state):
