@@ -1192,7 +1192,12 @@ if LJBT_HAVE_UNWINDER:
                 if not entry:
                     return None
                 cf = sp + t.spadjust + c.cf['JITX']
-                ui = pf.create_unwind_info(LJBTFrameId(spv, t.mcode))
+                # A gdb.Value, not an int: gdb before 14 takes no int for
+                # the pc of a frame id ("The value of the 'pc' attribute
+                # is not a pointer."), and gdb 12 then had no caller of
+                # the trace frame but its own guess.
+                ui = pf.create_unwind_info(LJBTFrameId(
+                    spv, gdb.Value(t.mcode).cast(pcv.type)))
                 ui.add_saved_register(c.pcreg, gdb.Value(
                     entry + c.cf['PCSTEP']).cast(pcv.type))
                 ui.add_saved_register(c.spreg, gdb.Value(cf).cast(spv.type))
