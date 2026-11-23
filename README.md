@@ -70,7 +70,7 @@ lj-bt: L=0x7ffff7945378 (G->cur_L), G=0x7ffff79453d8, vmstate=CFUNC
 #4.3  [lua] examples/mixed.lua:110 in function <examples/mixed.lua:109>
 #4.4  [lua] (tail call from global 'lj_a' = examples/mixed.lua:114)  [heuristic]
 #4.5  [lua] examples/mixed.lua:117 in function <examples/mixed.lua:116>
-#4.6  [lua] examples/mixed.lua:133 in main chunk
+#4.6  [lua] examples/mixed.lua:133 in main chunk  <called from C: lua_pcall/cpcall>
 #5    lua_pcall () at src/lj_api.c:1142
 #6    luaT_call () at lua/utils.c:755
 #7    lua_main () at lua/init.c:1060
@@ -90,7 +90,7 @@ lj-bt: L=0x7ffff7945378 (G->cur_L), G=0x7ffff79453d8, vmstate=TRACE 158
 #1.1  [lua] examples/mixed.lua:82 in function <examples/mixed.lua:80>  (inlined in trace 158, snapshot #6)
 #2    lj_BC_JLOOP ()  [VM entry L=0x7ffff7945378 cframe=0x7ffff6480e50, main L]
 #2.1  [lua] examples/mixed.lua:87 in function <examples/mixed.lua:75>  (trace 158 base frame, snapshot #6)
-#2.2  [lua] examples/mixed.lua:133 in main chunk
+#2.2  [lua] examples/mixed.lua:133 in main chunk  <called from C: lua_pcall/cpcall>
 #3    lua_pcall () at src/lj_api.c:1142
 ```
 

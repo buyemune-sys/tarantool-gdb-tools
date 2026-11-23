@@ -1873,19 +1873,24 @@ def ljbt_render_links(seg, top_pc, out):
             else:
                 line, note = ljbt_cframe_line(seg, fn)
         how = []
+        # The link that says how fn was called: of a vararg function, the
+        # original one under its FRAME_VARG link, the next in the segment.
+        call = link
         if link.typep == LJBT_FT_VARG and not link.islua:
             skip_next = True
-        elif link.typep == LJBT_FT_C and not link.islua:
+            if i + 1 < len(seg.links):
+                call = seg.links[i + 1]
+        if call.typep == LJBT_FT_C and not call.islua:
             how.append('called from C: lua_call')
-        elif link.typep == LJBT_FT_CP and not link.islua:
+        elif call.typep == LJBT_FT_CP and not call.islua:
             if seg.cf and seg.cf & LJBT_CFRAME_RESUME:
                 how.append('coroutine body')
             else:
                 how.append('called from C: lua_pcall/cpcall')
-        elif link.typep == LJBT_FT_CONT and not link.islua:
-            how.append(ljbt_cont_kind(link))
-        elif link.typep in (LJBT_FT_PCALL, LJBT_FT_PCALLH) and \
-                not link.islua:
+        elif call.typep == LJBT_FT_CONT and not call.islua:
+            how.append(ljbt_cont_kind(call))
+        elif call.typep in (LJBT_FT_PCALL, LJBT_FT_PCALLH) and \
+                not call.islua:
             how.append('protected by pcall/xpcall')
         if override is not None:
             how.append('tail-called inside the trace, the frame slot still '
@@ -1902,23 +1907,29 @@ def ljbt_render_links(seg, top_pc, out):
                     RuntimeError):
                 tail, why = [], None
         if LJBT_OPTS.get('verbose'):
-            s += '  [{} link 0x{:x}]'.format(link.tname(), link.addr)
+            s += '  [{} link 0x{:x}{}]'.format(
+                call.tname(), call.addr, '' if call is link else
+                ' under V link 0x{:x}'.format(link.addr))
             if why:
                 s += '  ({})'.format(why)
-        out.append(ljbt_lua_entry(fn, line, note, how, link, seg.L.addr, s))
+        extra = {} if call is link else {'vararg': True}
+        out.append(ljbt_lua_entry(fn, line, note, how, link, seg.L.addr, s,
+                                  call=call, **extra))
         out.extend(tail)
         prev = link
 
 
-def ljbt_lua_entry(fn, line, note, how, link, L, text, **extra):
-    '''A Lua frame of the output: text plus the fields of --json.'''
+def ljbt_lua_entry(fn, line, note, how, link, L, text, call=None, **extra):
+    '''A Lua frame of the output: text plus the fields of --json.  ftype
+    is the type of the link that called the frame (call, if not link).'''
+    call = call or link
     e = {
         'kind': 'lua', 'text': text, 'fkind': fn.kind,
         'func': fn.name if fn.kind in ('c', 'ff') else None,
         'chunk': fn.proto.chunk if fn.kind == 'lua' else None,
         'defline': fn.proto.firstline if fn.kind == 'lua' else None,
         'currentline': line, 'note': note, 'how': how,
-        'ftype': link.tname() if link is not None else None,
+        'ftype': call.tname() if call is not None else None,
         'link': '0x{:x}'.format(link.addr) if link is not None else None,
         'L': '0x{:x}'.format(L) if L else None,
     }
