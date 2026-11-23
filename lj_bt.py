@@ -540,13 +540,21 @@ def ljbt_gcstr(addr):
 
 
 def ljbt_chunkid(src):
-    '''Like luaO_chunkid/lj_debug_shortname.'''
-    if src.startswith('@') or src.startswith('='):
+    '''The name of a chunk as LuaJIT's short_src has it
+    (lj_debug_shortname, LUA_IDSIZE 60): "=name" without the "=", cut
+    at 59 characters; a string source as [string "..."], up to its first
+    control character and at most 48 characters, cut to 45 and "..." if
+    there is more.  But a file ("@") with its whole path, not the end.'''
+    if src.startswith('@'):
         return src[1:]
-    line = src.split('\n', 1)[0]
-    if len(line) > 40 or '\n' in src:
-        line = line[:40] + '...'
-    return '[string "{}"]'.format(line)
+    if src.startswith('='):
+        return src[1:60]
+    n = 0
+    while n < 48 and n < len(src) and src[n] >= ' ':
+        n += 1
+    if n < len(src):
+        return '[string "{}..."]'.format(src[:min(n, 45)])
+    return '[string "{}"]'.format(src)
 
 
 class LJBTProto(object):
