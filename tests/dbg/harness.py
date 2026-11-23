@@ -19,6 +19,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,27 @@ if not TARANTOOL:
     raise RuntimeError('set LJBT_TARANTOOL to a tarantool binary with DWARF')
 
 PY_ERROR = 'Error occurred in Python'
+
+# gdb 15 (ubuntu-24.04 runners, CI run 45141719368) cannot size the
+# XSAVE area gcore wrote on that CPU and warns when a command reads the
+# registers of a thread on the core; the general registers the tests
+# use are read fine, gdb 17 does not warn.  Taken out of core outputs,
+# reported once on stderr so that a run still shows it.
+CORE_WARNING = re.compile(
+    r"^warning: Unexpected size of section `\.reg-xstate/\d+' in core "
+    r"file\.\n", re.M)
+_core_warned = []
+
+
+def strip_core_warnings(out):
+    '''out without the CORE_WARNING lines of gdb.'''
+    res, n = CORE_WARNING.subn('', out)
+    if n and not _core_warned:
+        _core_warned.append(n)
+        sys.stderr.write('note: gdb warns "Unexpected size of section '
+                         '.reg-xstate" on the core; ignored in the '
+                         'comparisons (see CORE_WARNING)\n')
+    return res
 
 
 def lua_eval(code, timeout=60):
@@ -290,7 +312,10 @@ class DbgCase(unittest.TestCase):
     def raw(self, scen, key, mode='live'):
         res = self.result(scen, mode)
         self.assertIn(key, res['cmds'], 'no command {}'.format(key))
-        return res['cmds'][key]
+        r = res['cmds'][key]
+        if mode == 'core' and r['out']:
+            r = dict(r, out=strip_core_warnings(r['out']))
+        return r
 
     def value(self, scen, key, mode='live'):
         '''The value of an "eval:" command.'''
