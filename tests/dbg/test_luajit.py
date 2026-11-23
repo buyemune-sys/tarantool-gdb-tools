@@ -16,6 +16,7 @@ import unittest
 
 import harness as H
 from harness import DbgCase, Scenario, G, GG, gcval, mref
+from othercore import OtherCore
 
 RX_ADDR = r'0x[0-9a-f]+'
 RX_P = 'p64' if H.IS_GC64 else 'p32'    # IRT_PGC
@@ -1368,6 +1369,23 @@ class TestEnumFallback(DbgCase):
                 self.assertNoPyError(scen)
         # Every table was taken.
         self.assertEqual(sorted(used), sorted(ENUM_MAXES))
+
+
+class TestOtherCore(DbgCase):
+    '''The commands on a core after a core of another process (see
+    othercore.py): lj-bc, lj-proto and lj-func read lj_bc_mode, lj-trace
+    lj_ir_mode, at their address in that process.'''
+    OTHER = dict((s.name, OtherCore(s)) for s in (PROTO, TRACES))
+    SCENARIOS = tuple(s for o in OTHER.values() for s in o.scenarios)
+
+    def check(self, name):
+        self.assertEqual(self.OTHER[name].diffs(), [])
+
+    def test_proto(self):
+        self.check('proto')
+
+    def test_traces(self):
+        self.check('traces')
 
 
 if __name__ == '__main__':

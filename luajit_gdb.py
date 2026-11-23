@@ -1315,15 +1315,11 @@ def bc_d(ins):
 BCMODE = EnumBasedList('BCM_max', 'BCMode', cut_prefix, 'BCM')
 
 
-lj_bc_mode_ = None
-
-
 def lj_bc_mode():
-    global lj_bc_mode_
-    if lj_bc_mode_:
-        return lj_bc_mode_
-    lj_bc_mode_ = dbg.lookup_global('lj_bc_mode')
-    return lj_bc_mode_
+    # Looked up on every use, not kept: the value holds the address of
+    # the array in the process it was looked up in, and a PIE is at
+    # another address in another process (another core, an attach).
+    return dbg.lookup_global('lj_bc_mode')
 
 
 def bcmode_a(op):
@@ -1794,15 +1790,9 @@ IRM = [
 ]
 
 
-lj_ir_mode_ = None
-
-
 def lj_ir_mode():
-    global lj_ir_mode_
-    if lj_ir_mode_:
-        return lj_ir_mode_
-    lj_ir_mode_ = dbg.lookup_global('lj_ir_mode')
-    return lj_ir_mode_
+    # Looked up on every use, as lj_bc_mode().
+    return dbg.lookup_global('lj_ir_mode')
 
 
 def ir_left(op):
