@@ -1316,7 +1316,6 @@ if MP_COMPRESSION is not None and dwarf_has('MsgPack compression', values=(
     class Compression:
         COMPRESSION_TYPE_NONE = gdb.parse_and_eval('COMPRESSION_TYPE_NONE')
         COMPRESSION_TYPE_MAX = gdb.parse_and_eval('compression_type_MAX')
-        compression_type_strs = gdb.parse_and_eval('compression_type_strs')
 
         def __init__(self, val):
             self.val = val
@@ -1324,7 +1323,8 @@ if MP_COMPRESSION is not None and dwarf_has('MsgPack compression', values=(
         def __str__(self):
             type = self.val['type']
             if type >= self.COMPRESSION_TYPE_NONE and type < self.COMPRESSION_TYPE_MAX:
-                type = self.compression_type_strs[type].string()
+                # Looked up on use, not on load (see Datetime.timezone_name).
+                type = gdb.parse_and_eval('compression_type_strs')[type].string()
             return 'compression({}):[{}]->[{}]'.format(type, self.val['raw_size'], self.val['size'])
 
 

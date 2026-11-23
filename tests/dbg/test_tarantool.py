@@ -100,6 +100,8 @@ MP_SAMPLES = [
                      "string.rep('\\x22', 7)"),
     # An extension type tarantool does not have, in an array.
     ('unknown_ext', "'\\x92\\xd4\\x63\\x2a\\x01'"),
+    # MP_COMPRESSION (5) of type 0 (none), raw size 3, 3 bytes of data.
+    ('compression', "'\\xc7\\x05\\x05\\x00\\x03abc'"),
 ]
 MP = dict((name, i) for i, (name, _) in enumerate(MP_SAMPLES))
 # The print() arguments: the tuple, the cdata, then the MsgPack strings.
@@ -992,6 +994,11 @@ class TestMsgPack(DbgCase):
 
     def test_unknown_ext(self):
         self.assertEqual(self.mp('unknown_ext'), '{ext:99 of len 1, 1U}')
+
+    def test_compression(self):
+        # The name of the type comes from compression_type_strs.
+        self.assertEqual(self.mp('compression'),
+                         'compression(none):[3]->[3]')
 
     def test_tuple_ext(self):
         # The keys are names, not MsgPack (as test-tarantool-gdb.py has).
