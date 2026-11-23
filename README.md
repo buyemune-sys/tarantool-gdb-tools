@@ -5,6 +5,7 @@ gdb extensions for debugging Tarantool and its LuaJIT, live and on core dumps, o
 | Path | What |
 |---|---|
 | `lj_bt.py` | `lj-bt`: one stitched C + Lua backtrace, and the same for plain `bt` |
+| `luajit_dbg.py` | LuaJIT's extension (`lj-stack`, `lj-tv`, ...), one file for every Tarantool 3.x, see [below](#luajit_dbgpy) |
 | `examples/` | scenarios and gdb scripts to try the tools on |
 | `tests/` | automated tests, run against a Tarantool build with DWARF |
 
@@ -159,6 +160,46 @@ tests/run.sh
 - The Rust modules of the `rust` group are built with the runner's Rust (stable is installed if it is missing or older than 1.89), cached per architecture together with the crates.
 - A failed job uploads its work directories (`gdb.log`, `probe.jsonl`, `violations.jsonl`) as the artifact `logs-<version>-<arch>`.
 
+## luajit_dbg.py
+
+LuaJIT's gdb (and lldb) extension in one version for every Tarantool 3.x, from 3.0.2 to 3.9.0, instead of the one of each release (`luajit-gdb.py` with 7 commands up to 3.5, `luajit_dbg.py` with 15 from 3.6). It is `src/luajit_dbg.py` of tarantool/luajit at Mikhail Elhimov's branch `elhimov/gh-13094-dbg-avoid-hardcoded-enums`, which takes the enums from the inferior, with these changes on top, each a commit of its own:
+
+- the red zone of `lj-stack` is taken from the stack: it is 7 slots, not 8, in the LuaJIT of 3.0, 3.1 and 3.4;
+- a Lua frame is `[L]`, never `[LP]` (that P was a bit of the return PC);
+- the `lits` operand of `lj-bc` is signed (`KSHORT -7`, not `65529`);
+- with no `lua_State` (before Tarantool sets `tarantool_L`, and since 3.7 in every thread with no Lua) the commands say so instead of a Python error;
+- if the debug info lacks an enum (it may leave out one used only through its constants, tarantool/tarantool#13094), the built-in members are taken, the same in the LuaJIT of every 3.x, with a note;
+- `lj-gctop [N]`: the number and total size of the GC objects and the N largest, ported from the branch `elhimov/gh-noticket-gdb-gctop`.
+
+```
+(gdb) source luajit_dbg.py
+(gdb) lj-stack
+(gdb) lj-gctop 20
+(lldb) command script import luajit_dbg.py
+```
+
+`lj-bt` works on top of it as on top of the extension of the release (the bytecode and IR tables are there for every version). lldb is not tested here.
+
+### Tests
+
+`tests/dbg/run.sh [GROUP...]` runs the tests of `luajit_dbg.py` against a Tarantool build with DWARF:
+
+| Group | What |
+|---|---|
+| `luajit` | every command, live and on the `gcore` file of the same stop; the outputs must match and agree with an oracle: `debug.getinfo` for functions and frames, `jit.bc` for the bytecode, `jit.dump` for the IR, registers and snapshots of a trace, `collectgarbage('count')` for `lj-gctop`, gdb expressions for addresses, sizes and GC fields (default) |
+| `upstream` | LuaJIT's own debugger tests, vendored unchanged in `tests/dbg/upstream/` (see its README), run against tarantool; what cannot pass there is skipped with the reason |
+| `all` | both |
+
+```
+export $(tests/fetch.sh 3.9.0 amd64 ~/tarantool-3.9.0)
+tests/dbg/run.sh all
+DBG_LUAJIT_DBG=$LJBT_LUAJIT_DBG tests/dbg/run.sh upstream     # the extension of the release
+```
+
+`DBG_LUAJIT_DBG` points the tests at another extension, to see a test of a fix fail before it. `DBG_KEEP=1` keeps the work directories in `TMPDIR` (the plan, the result and the gdb log of every run). No scenario calls `box.cfg` or listens on a port.
+
+`.github/workflows/dbg.yml` runs both groups for 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2 and 3.9.0 on amd64 and arm64 (arm64 `continue-on-error` for now), and the upstream tests once more with the extension of the release, for the step summary.
+
 ## License
 
-BSD 2-Clause, see `LICENSE`.
+BSD 2-Clause, see `LICENSE`, except for `luajit_dbg.py` and the vendored tests, which are MIT as LuaJIT: see `NOTICE` for where they come from.
