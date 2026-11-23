@@ -481,6 +481,16 @@ The group `cores` (`tests/dbg/test_cores.py`) runs tarantool with `box.cfg` (the
 - `continue-on-error` for now: the arm64 jobs of `test.yml` and `dbg.yml`, every job of `lldb.yml` (its arm64 ones never ran before) and of `cores.yml`, until they are green.
 - The Rust modules of the `rust` group are built with the runner's Rust (stable is installed if it is missing or older than 1.89), cached per architecture together with the crates.
 - A failed job uploads its work directories (`gdb.log`, `probe.jsonl`, `violations.jsonl` of lj-bt; the plans, results and gdb logs of `tests/dbg`) as an artifact.
+- When each `continue-on-error` goes: [`docs/ci-continue-on-error.md`](docs/ci-continue-on-error.md).
+
+## Upstream bugs
+
+Bugs found here in other projects, each with a reproducer in `docs/repro/` and the report text ready to file:
+
+| Page | Bug | Fixed upstream |
+|---|---|---|
+| [`docs/upstream-gdb-gcore-guard-pages.md`](docs/upstream-gdb-gcore-guard-pages.md) | gdb's `gcore` loses the thread stacks with glibc 2.42+ on Linux 6.13+ | gdb 18.1; Ubuntu 25.10–26.10 lack it |
+| [`docs/upstream-lldb-pending-signal.md`](docs/upstream-lldb-pending-signal.md) | lldb cannot allocate memory in a process with a pending signal (lldb-server, Linux) | no, still in LLVM main |
 
 ## License
 
