@@ -1231,8 +1231,20 @@ class TestTraceStop(DbgCase):
 
 # The GC states: the stop is in the function of each state, in the full
 # cycle of the script (the GC of the startup may run before tarantool_L
-# is set).
+# is set).  The GC is in GCSpause at the stop in print (TestGCStates
+# checks it), after a full cycle and with the threshold twice the heap:
+# collectgarbage() of the script then starts with the sweep phase, the
+# first gc_onestep is in GCSsweepstring and each breakpoint is hit after
+# a few steps.  Where startup left it depends on the environment, by the
+# length of paths: GCSpause or GCSpropagate here, GCSsweepstring with the
+# paths of the CI runner (3.5.2, gdb).  From GCSsweep or GCSfinalize the
+# full cycle runs 20000 steps of GCSpropagate (3.5.2) before
+# GCSsweepstring, each a stop at gc_onestep whose condition the lldb
+# driver evaluates, 5 ms and more each; the SWEEPSTRING scenario of lldb
+# 22 once ran out of its 120 s (lldb.yml run 45154576756, 3.5.2; the
+# same code passed in run 45162429803).
 GC_SCRIPT = '''
+collectgarbage()
 print('go')
 local obj = newproxy(true)
 getmetatable(obj).__gc = function() end
@@ -1258,7 +1270,8 @@ if H.DEBUGGER == 'lldb':
                     .format(G('L')))
 GC_SCENARIOS = [Scenario('gc_' + st.lower(), GC_SCRIPT, ['break lj_cf_print'],
                          gc_cmds('tarantool_L'),
-                         setup=['delete', brk, 'continue'])
+                         setup=['eval:{}->gc.state'.format(G('L')),
+                                'delete', brk, 'continue'])
                 for st, brk in GC_STATES]
 
 
@@ -1274,6 +1287,15 @@ class TestGCStates(DbgCase):
                 self.assertEqual(lines[2], 'JIT state: IDLE')
                 check_gc(self, scen, state)
                 self.assertNoPyError(scen)
+
+    def test_pause_at_print(self):
+        # GCSpause (0) at the stop in print, whatever the startup did:
+        # the stop of each state is a few steps away (see GC_SCRIPT).
+        for (state, _), scen in zip(GC_STATES, GC_SCENARIOS):
+            with self.subTest(state=state):
+                cmd, out, err = self.result(scen, 'live')['setup'][0]
+                self.assertIsNone(err, cmd)
+                self.assertEqual(out, 0, cmd)
 
 
 # Enums missing from the debug info ################################
