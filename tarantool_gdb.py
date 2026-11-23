@@ -1141,14 +1141,16 @@ if MP_DATETIME is not None and \
         ######################################################
         # this section corresponds to tzcode library
 
-        zones_unsorted = gdb.parse_and_eval('zones_unsorted')
         zones_unsorted_size = gdb.parse_and_eval('sizeof(zones_unsorted) / sizeof(zones_unsorted[0])')
 
         @classmethod
         def timezone_name(cls, index): # timezone_name
             if index >= cls.zones_unsorted_size:
                 raise gdb.GdbError("Datetime.timezone_name: index {} is out of bound".format(index))
-            return cls.zones_unsorted[index]['name'].string()
+            # Looked up on use, not on load: a value keeps the address of
+            # the variable at its lookup, and that of a PIE moves when the
+            # program starts (or another core is loaded).
+            return gdb.parse_and_eval('zones_unsorted')[index]['name'].string()
 
         ######################################################
         # this section corresponds to tarantool core library
@@ -1249,7 +1251,6 @@ if MP_ERROR is not None and dwarf_has('MsgPack error', values=(
         'MP_ERROR_MAX', 'mp_error_field_to_json_key', 'MP_ERROR_STACK')):
     class MsgPackExtPrinterError(MsgPackPrinter.ExtPrinter):
         MP_ERROR_MAX = int(gdb.parse_and_eval('MP_ERROR_MAX'))
-        mp_error_field_to_json_key = gdb.parse_and_eval('mp_error_field_to_json_key')
 
         MP_ERROR_STACK = int(gdb.parse_and_eval('MP_ERROR_STACK'))
 
@@ -1257,12 +1258,14 @@ if MP_ERROR is not None and dwarf_has('MsgPack error', values=(
             self.mp = self.decode_mp(MsgPack.TYPE_MAP)
 
         def to_string(self):
+            # Looked up on use, not on load (see Datetime.timezone_name).
+            json_keys = gdb.parse_and_eval('mp_error_field_to_json_key')
 
             def map_single_error(item):
                 k, v = item
                 self.assert_type(k, MsgPack.TYPE_UINT)
                 if k.value < self.MP_ERROR_MAX:
-                    key = self.mp_error_field_to_json_key[k.value].string()
+                    key = json_keys[k.value].string()
                     key = key.strip().split(':', 1)[0]
                 else:
                     key = k.val
