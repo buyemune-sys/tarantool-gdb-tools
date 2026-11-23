@@ -577,6 +577,7 @@ class _LLDBDebugger(Debugger):
 
         super(_LLDBDebugger, self).__init__()
         self.target = lldb.debugger.GetSelectedTarget()
+        self._primed = set()    # processes, see _prime_allocations()
         # Monkey-patch the lldb.value class.
         lldb.value.__add__ = lldb__add__
         lldb.value.__bool__ = lldb__bool__
@@ -670,7 +671,9 @@ class _LLDBDebugger(Debugger):
             # assembly (lj_BC_FUNCC, a syscall stub) or of a library
             # without debug info it is "out of scope": the first frame
             # of the thread that has it.
-            thread = self.target.GetProcess().GetSelectedThread()
+            process = self.target.GetProcess()
+            self._prime_allocations(process)
+            thread = process.GetSelectedThread()
             for frame in [thread.GetSelectedFrame()] + list(thread):
                 v = frame.EvaluateExpression(symbol)
                 if v.IsValid() and not v.GetError().Fail():
@@ -732,8 +735,47 @@ class _LLDBDebugger(Debugger):
         else:
             return None
 
+    # lldb-server gets the memory of an expression with an mmap that it
+    # runs in the inferior, and takes the stop of any pending signal for
+    # its end (NativeProcessLinux::Syscall): the address is then the
+    # syscall number.  Tarantool's low-resolution clock (an ITIMER_REAL
+    # of 10 ms, SIGALRM) keeps one pending in a stopped process.  lldb
+    # keeps every page it got, per permission set, for good: allocate
+    # until a page is mapped, leave the bad ones reserved in full so
+    # that nothing lands there, free the good one for lldb to use.
+    _PRIME = (
+        (0x1000, 'rw'), (0x1000, 'rx'), (0x1000, 'rwx'), (0x1000, 'r'),
+        # IRMemoryMap::FindSpace takes 0x81000 bytes per expression.
+        (0x200000, 'rw'),
+    )
+
+    def _prime_allocations(self, process):
+        if process.GetPluginName() != 'gdb-remote' or \
+           process.GetState() != lldb.eStateStopped or \
+           process.GetUniqueID() in self._primed:
+            return
+        self._primed.add(process.GetUniqueID())
+        perms = {'r': lldb.ePermissionsReadable,
+                 'w': lldb.ePermissionsWritable,
+                 'x': lldb.ePermissionsExecutable}
+        for size, p in self._PRIME:
+            perm = 0
+            for c in p:
+                perm |= perms[c]
+            for _ in range(20):
+                err = lldb.SBError()
+                addr = process.AllocateMemory(size, perm, err)
+                if err.Fail():
+                    break
+                info = lldb.SBMemoryRegionInfo()
+                if process.GetMemoryRegionInfo(addr, info).Success() and \
+                   info.IsMapped():
+                    process.DeallocateMemory(addr)
+                    break
+
     def eval(self, expr):
         process = self.target.GetProcess()
+        self._prime_allocations(process)
         thread = process.GetSelectedThread()
         frame = thread.GetSelectedFrame()
         val = frame.EvaluateExpression(expr)
