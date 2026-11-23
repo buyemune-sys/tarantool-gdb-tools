@@ -28,6 +28,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 DRIVER = os.path.join(HERE, 'driver.py')
 ORACLE = os.path.join(HERE, 'oracle.py')
+HIDE_ENUMS = os.path.join(HERE, 'hide_enums.py')
+ENUMCHECK = os.path.join(HERE, 'enumcheck.py')
 LUA = os.path.join(HERE, 'lua')
 
 TARANTOOL = os.environ.get('LJBT_TARANTOOL')
@@ -96,7 +98,7 @@ class Scenario(object):
 
     def __init__(self, name, script, breaks, cmds, setup=(), prep=(),
                  sources=None, deferred=False, live_only=None,
-                 timeout=120, env=None):
+                 timeout=120, env=None, gdb_env=None):
         self.name = name
         self.script = script
         self.breaks = list(breaks)
@@ -108,15 +110,25 @@ class Scenario(object):
         self.deferred = deferred
         self.live_only = live_only      # the reason, if any
         self.timeout = timeout
-        self.env = env or {}
+        self.env = env or {}            # of the inferior
+        self.gdb_env = gdb_env or {}    # of gdb
         self._res = None
+
+    def variant(self, name, **kw):
+        '''The same scenario with other settings (sources, gdb_env...).'''
+        args = dict(script=self.script, breaks=self.breaks, cmds=self.cmds,
+                    setup=self.setup, prep=self.prep, sources=self.sources,
+                    deferred=self.deferred, live_only=self.live_only,
+                    timeout=self.timeout, env=self.env, gdb_env=self.gdb_env)
+        args.update(kw)
+        return Scenario(name, **args)
 
     def _gdb(self, wd, plan, tag):
         plan = dict(plan, out=os.path.join(wd, tag + '.json'))
         pfile = os.path.join(wd, tag + '.plan.json')
         with open(pfile, 'w') as fh:
             json.dump(plan, fh, indent=1)
-        env = dict(os.environ, DBG_PLAN=pfile)
+        env = dict(os.environ, DBG_PLAN=pfile, **self.gdb_env)
         p = subprocess.run([GDB, '-batch', '-nx', '-x', DRIVER],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            stdin=subprocess.DEVNULL, universal_newlines=True,

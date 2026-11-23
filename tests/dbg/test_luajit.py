@@ -1129,5 +1129,77 @@ class TestGCStates(DbgCase):
                 self.assertNoPyError(scen)
 
 
+# Enums missing from the debug info ################################
+
+# The max members of the enums of luajit_dbg.py, and the two members
+# that tell LJ_64 and LJ_GC64.
+ENUM_MAXES = ['BCM_max', 'BC__MAX', 'FF__MAX', 'MM__MAX', 'LJ_VMST__MAX',
+              'IR__MAX', 'IRT__MAX', 'IRFL__MAX', 'IRFPM__MAX',
+              'IRCALL__MAX']
+HIDDEN = ENUM_MAXES + ['IRT_PTR', 'IRT_PGC']
+
+
+def noenum(scen):
+    '''The commands of scen, then once more in the same process with the
+    enums hidden (hide_enums.py) and the extension sourced again: the
+    outputs must be the same.'''
+    cmds = list(scen.cmds) + [('hide', 'source ' + H.HIDE_ENUMS),
+                              ('reload', 'source ' + H.LUAJIT_DBG)]
+    cmds += [('noenum.' + e[0],) + tuple(e[1:]) for e in scen.cmds
+             if not e[1].startswith('eval:')]
+    return scen.variant(scen.name + '_noenum', cmds=cmds,
+                        gdb_env={'DBG_HIDE_ENUMS': ','.join(HIDDEN)})
+
+
+NOENUM = [noenum(s) for s in (BASIC, VALUES, PROTO, TRACES, TRACE_STOP)]
+ENUMS = Scenario('enums', 'print(1)\n', ['break lj_cf_print'],
+                 [('check', 'dbg-enum-check')],
+                 sources=[H.LUAJIT_DBG, H.ENUMCHECK])
+FALLBACK_NOTE = re.compile(r'^luajit_dbg\.py: failed to resolve .* enum '
+                           r'members using (\w+), taking the built-in list\n',
+                           re.M)
+
+
+class TestEnumFallback(DbgCase):
+    SCENARIOS = [ENUMS] + NOENUM
+
+    def test_tables_match_dwarf(self):
+        # The built-in members are those of the debug info of every
+        # version tested.
+        import json
+        got = json.loads(self.out(ENUMS, 'check'))
+        self.assertEqual(sorted(got), sorted(ENUM_MAXES))
+        for name, v in sorted(got.items()):
+            self.assertEqual(v['fallback'], v['dwarf'], name)
+
+    def test_without_enums(self):
+        # tarantool/tarantool#13094: with none of its enums in the debug
+        # info the extension loads and prints what it prints with them.
+        used = set()
+        for scen in NOENUM:
+            with self.subTest(scenario=scen.name):
+                reload = self.out(scen, 'reload')
+                self.assertNotIn('failed to load', reload)
+                TestLoad.check_load(self, reload)
+                for e in scen.cmds:
+                    key = e[0]
+                    if not key.startswith('noenum.'):
+                        continue
+                    for mode in scen.modes():
+                        a = self.raw(scen, key[7:], mode)
+                        b = self.raw(scen, key, mode)
+                        self.assertEqual(bool(a.get('skipped')),
+                                         bool(b.get('skipped')), key)
+                        used.update(FALLBACK_NOTE.findall(b['out'] or ''))
+                        self.assertEqual(
+                            FALLBACK_NOTE.sub('', b['out'] or ''),
+                            a['out'] or '', '{} ({})'.format(key, mode))
+                        self.assertEqual(b['err'], a['err'], key)
+                used.update(FALLBACK_NOTE.findall(reload))
+                self.assertNoPyError(scen)
+        # Every table was taken.
+        self.assertEqual(sorted(used), sorted(ENUM_MAXES))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -79,11 +79,16 @@ class Debugger(object):
         return arg, flags
 
     def configure(self):
-        global PADDING, LJ_TISNUM
+        global PADDING, LJ_TISNUM, LJ_64, LJ_FR2, LJ_GC64
         if not self.check_libluajit():
             return False
         try:
             self.init_luajit_arch()
+            if LJ_64 is None or LJ_GC64 is None:
+                # No IRType in the debug info (see ENUM_FALLBACK): the
+                # sizes of a pointer and of a GC reference tell the same.
+                LJ_64 = self.sizeof('GCobj *') == 8
+                LJ_FR2 = LJ_GC64 = self.sizeof('GCRef') == 8
             PADDING = ' ' * len(':' + hex((1 << (47 if LJ_GC64 else 32)) - 1))
             LJ_TISNUM = 0xfffeffff if LJ_64 and not LJ_GC64 else LJ_T['NUMX']
         except Exception:
@@ -353,9 +358,12 @@ class _GDBDebugger(Debugger):
 
     def init_luajit_arch(self):
         global LJ_64, LJ_DUALNUM, LJ_FR2, LJ_GC64
-        LJ_64 = str(gdb.parse_and_eval('IRT_PTR')) == 'IRT_P64'
+        try:
+            LJ_64 = str(gdb.parse_and_eval('IRT_PTR')) == 'IRT_P64'
+            LJ_FR2 = LJ_GC64 = str(gdb.parse_and_eval('IRT_PGC')) == 'IRT_P64'
+        except gdb.error:
+            pass  # No IRType in the debug info, see configure().
         LJ_DUALNUM = gdb.lookup_global_symbol('lj_lib_checknumber') is not None
-        LJ_FR2 = LJ_GC64 = str(gdb.parse_and_eval('IRT_PGC')) == 'IRT_P64'
 
     def register_command(self, command, name):
         command(name)
@@ -916,6 +924,162 @@ def strx64(val):
     return re.sub('L?$', '', hex(int(tou64(val))))
 
 
+# The members of the enums of EnumBasedList by the max member, for a
+# build whose debug info has not the enum (one used only through its
+# constants may be left out): the same in the LuaJIT of every
+# Tarantool from 3.0 to 3.9.
+ENUM_FALLBACK = {
+    'BCM_max': '''
+        BCMnone BCMdst BCMbase BCMvar BCMrbase BCMuv BCMlit BCMlits BCMpri
+        BCMnum BCMstr BCMtab BCMfunc BCMjump BCMcdata
+    ''',
+    'BC__MAX': '''
+        BC_ISLT BC_ISGE BC_ISLE BC_ISGT BC_ISEQV BC_ISNEV BC_ISEQS BC_ISNES
+        BC_ISEQN BC_ISNEN BC_ISEQP BC_ISNEP BC_ISTC BC_ISFC BC_IST BC_ISF
+        BC_ISTYPE BC_ISNUM BC_MOV BC_NOT BC_UNM BC_LEN BC_ADDVN BC_SUBVN
+        BC_MULVN BC_DIVVN BC_MODVN BC_ADDNV BC_SUBNV BC_MULNV BC_DIVNV
+        BC_MODNV BC_ADDVV BC_SUBVV BC_MULVV BC_DIVVV BC_MODVV BC_POW BC_CAT
+        BC_KSTR BC_KCDATA BC_KSHORT BC_KNUM BC_KPRI BC_KNIL BC_UGET BC_USETV
+        BC_USETS BC_USETN BC_USETP BC_UCLO BC_FNEW BC_TNEW BC_TDUP BC_GGET
+        BC_GSET BC_TGETV BC_TGETS BC_TGETB BC_TGETR BC_TSETV BC_TSETS BC_TSETB
+        BC_TSETM BC_TSETR BC_CALLM BC_CALL BC_CALLMT BC_CALLT BC_ITERC
+        BC_ITERN BC_VARG BC_ISNEXT BC_RETM BC_RET BC_RET0 BC_RET1 BC_FORI
+        BC_JFORI BC_FORL BC_IFORL BC_JFORL BC_ITERL BC_IITERL BC_JITERL
+        BC_LOOP BC_ILOOP BC_JLOOP BC_JMP BC_FUNCF BC_IFUNCF BC_JFUNCF BC_FUNCV
+        BC_IFUNCV BC_JFUNCV BC_FUNCC BC_FUNCCW
+    ''',
+    'FF__MAX': '''
+        FF_LUA_ FF_C_ FF_assert FF_type FF_next FF_pairs FF_ipairs_aux
+        FF_ipairs FF_getmetatable FF_setmetatable FF_getfenv FF_setfenv
+        FF_rawget FF_rawset FF_rawequal FF_unpack FF_select FF_tonumber
+        FF_tostring FF_error FF_pcall FF_xpcall FF_loadfile FF_load
+        FF_loadstring FF_dofile FF_gcinfo FF_collectgarbage FF_newproxy
+        FF_print FF_coroutine_status FF_coroutine_running
+        FF_coroutine_isyieldable FF_coroutine_create FF_coroutine_yield
+        FF_coroutine_resume FF_coroutine_wrap_aux FF_coroutine_wrap
+        FF_math_abs FF_math_floor FF_math_ceil FF_math_sqrt FF_math_log10
+        FF_math_exp FF_math_sin FF_math_cos FF_math_tan FF_math_asin
+        FF_math_acos FF_math_atan FF_math_sinh FF_math_cosh FF_math_tanh
+        FF_math_frexp FF_math_modf FF_math_log FF_math_atan2 FF_math_pow
+        FF_math_fmod FF_math_ldexp FF_math_min FF_math_max FF_math_random
+        FF_math_randomseed FF_bit_tobit FF_bit_bnot FF_bit_bswap FF_bit_lshift
+        FF_bit_rshift FF_bit_arshift FF_bit_rol FF_bit_ror FF_bit_band
+        FF_bit_bor FF_bit_bxor FF_bit_tohex FF_string_byte FF_string_char
+        FF_string_sub FF_string_rep FF_string_reverse FF_string_lower
+        FF_string_upper FF_string_dump FF_string_find FF_string_match
+        FF_string_gmatch_aux FF_string_gmatch FF_string_gsub FF_string_format
+        FF_table_maxn FF_table_insert FF_table_concat FF_table_sort
+        FF_table_new FF_table_clear FF_io_method_close FF_io_method_read
+        FF_io_method_write FF_io_method_flush FF_io_method_seek
+        FF_io_method_setvbuf FF_io_method_lines FF_io_method___gc
+        FF_io_method___tostring FF_io_open FF_io_popen FF_io_tmpfile
+        FF_io_close FF_io_read FF_io_write FF_io_flush FF_io_input
+        FF_io_output FF_io_lines FF_io_type FF_os_execute FF_os_remove
+        FF_os_rename FF_os_tmpname FF_os_getenv FF_os_exit FF_os_clock
+        FF_os_date FF_os_time FF_os_difftime FF_os_setlocale
+        FF_debug_getregistry FF_debug_getmetatable FF_debug_setmetatable
+        FF_debug_getfenv FF_debug_setfenv FF_debug_getinfo FF_debug_getlocal
+        FF_debug_setlocal FF_debug_getupvalue FF_debug_setupvalue
+        FF_debug_upvalueid FF_debug_upvaluejoin FF_debug_sethook
+        FF_debug_gethook FF_debug_debug FF_debug_traceback FF_jit_on
+        FF_jit_off FF_jit_flush FF_jit_status FF_jit_attach
+        FF_jit_util_funcinfo FF_jit_util_funcbc FF_jit_util_funck
+        FF_jit_util_funcuvname FF_jit_util_traceinfo FF_jit_util_traceir
+        FF_jit_util_tracek FF_jit_util_tracesnap FF_jit_util_tracemc
+        FF_jit_util_traceexitstub FF_jit_util_ircalladdr FF_jit_opt_start
+        FF_jit_profile_start FF_jit_profile_stop FF_jit_profile_dumpstack
+        FF_ffi_meta___index FF_ffi_meta___newindex FF_ffi_meta___eq
+        FF_ffi_meta___len FF_ffi_meta___lt FF_ffi_meta___le
+        FF_ffi_meta___concat FF_ffi_meta___call FF_ffi_meta___add
+        FF_ffi_meta___sub FF_ffi_meta___mul FF_ffi_meta___div
+        FF_ffi_meta___mod FF_ffi_meta___pow FF_ffi_meta___unm
+        FF_ffi_meta___tostring FF_ffi_meta___pairs FF_ffi_meta___ipairs
+        FF_ffi_clib___index FF_ffi_clib___newindex FF_ffi_clib___gc
+        FF_ffi_callback_free FF_ffi_callback_set FF_ffi_cdef FF_ffi_new
+        FF_ffi_cast FF_ffi_typeof FF_ffi_typeinfo FF_ffi_istype FF_ffi_sizeof
+        FF_ffi_alignof FF_ffi_offsetof FF_ffi_errno FF_ffi_string FF_ffi_copy
+        FF_ffi_fill FF_ffi_abi FF_ffi_metatype FF_ffi_gc FF_ffi_load
+        FF_misc_getmetrics FF_misc_sysprof_start FF_misc_sysprof_stop
+        FF_misc_sysprof_report FF_misc_memprof_start FF_misc_memprof_stop
+    ''',
+    'IRCALL__MAX': '''
+        IRCALL_lj_str_cmp IRCALL_lj_str_find IRCALL_lj_str_new
+        IRCALL_lj_strscan_num IRCALL_lj_strfmt_int IRCALL_lj_strfmt_num
+        IRCALL_lj_strfmt_char IRCALL_lj_strfmt_putint IRCALL_lj_strfmt_putnum
+        IRCALL_lj_strfmt_putquoted IRCALL_lj_strfmt_putfxint
+        IRCALL_lj_strfmt_putfnum_int IRCALL_lj_strfmt_putfnum_uint
+        IRCALL_lj_strfmt_putfnum IRCALL_lj_strfmt_putfstr
+        IRCALL_lj_strfmt_putfchar IRCALL_lj_buf_putmem IRCALL_lj_buf_putstr
+        IRCALL_lj_buf_putchar IRCALL_lj_buf_putstr_reverse
+        IRCALL_lj_buf_putstr_lower IRCALL_lj_buf_putstr_upper
+        IRCALL_lj_buf_putstr_rep IRCALL_lj_buf_puttab IRCALL_lj_buf_tostr
+        IRCALL_lj_tab_new_ah IRCALL_lj_tab_new1 IRCALL_lj_tab_dup
+        IRCALL_lj_tab_clear IRCALL_lj_tab_newkey IRCALL_lj_tab_len
+        IRCALL_lj_gc_step_jit IRCALL_lj_gc_barrieruv IRCALL_lj_mem_newgco
+        IRCALL_lj_math_random_step IRCALL_lj_vm_modi IRCALL_log10 IRCALL_exp
+        IRCALL_sin IRCALL_cos IRCALL_tan IRCALL_asin IRCALL_acos IRCALL_atan
+        IRCALL_sinh IRCALL_cosh IRCALL_tanh IRCALL_fputc IRCALL_fwrite
+        IRCALL_fflush IRCALL_lj_vm_floor IRCALL_lj_vm_ceil IRCALL_lj_vm_trunc
+        IRCALL_sqrt IRCALL_log IRCALL_lj_vm_log2 IRCALL_pow IRCALL_atan2
+        IRCALL_ldexp IRCALL_lj_vm_tobit IRCALL_softfp_add IRCALL_softfp_sub
+        IRCALL_softfp_mul IRCALL_softfp_div IRCALL_softfp_cmp
+        IRCALL_softfp_i2d IRCALL_softfp_d2i IRCALL_lj_vm_sfmin
+        IRCALL_lj_vm_sfmax IRCALL_lj_vm_tointg IRCALL_softfp_ui2d
+        IRCALL_softfp_f2d IRCALL_softfp_d2ui IRCALL_softfp_d2f
+        IRCALL_softfp_i2f IRCALL_softfp_ui2f IRCALL_softfp_f2i
+        IRCALL_softfp_f2ui IRCALL_fp64_l2d IRCALL_fp64_ul2d IRCALL_fp64_l2f
+        IRCALL_fp64_ul2f IRCALL_fp64_d2l IRCALL_fp64_d2ul IRCALL_fp64_f2l
+        IRCALL_fp64_f2ul IRCALL_lj_carith_divi64 IRCALL_lj_carith_divu64
+        IRCALL_lj_carith_modi64 IRCALL_lj_carith_modu64
+        IRCALL_lj_carith_powi64 IRCALL_lj_carith_powu64 IRCALL_lj_cdata_newv
+        IRCALL_lj_cdata_setfin IRCALL_strlen IRCALL_memcpy IRCALL_memset
+        IRCALL_lj_vm_errno IRCALL_lj_carith_mul64 IRCALL_lj_carith_shl64
+        IRCALL_lj_carith_shr64 IRCALL_lj_carith_sar64 IRCALL_lj_carith_rol64
+        IRCALL_lj_carith_ror64
+    ''',
+    'IRFL__MAX': '''
+        IRFL_STR_LEN IRFL_FUNC_ENV IRFL_FUNC_PC IRFL_FUNC_FFID IRFL_THREAD_ENV
+        IRFL_TAB_META IRFL_TAB_ARRAY IRFL_TAB_NODE IRFL_TAB_ASIZE
+        IRFL_TAB_HMASK IRFL_TAB_NOMM IRFL_UDATA_META IRFL_UDATA_UDTYPE
+        IRFL_UDATA_FILE IRFL_CDATA_CTYPEID IRFL_CDATA_PTR IRFL_CDATA_INT
+        IRFL_CDATA_INT64 IRFL_CDATA_INT64_4
+    ''',
+    'IRFPM__MAX': '''
+        IRFPM_FLOOR IRFPM_CEIL IRFPM_TRUNC IRFPM_SQRT IRFPM_LOG IRFPM_LOG2
+        IRFPM_OTHER
+    ''',
+    'IRT__MAX': '''
+        IRT_NIL IRT_FALSE IRT_TRUE IRT_LIGHTUD IRT_STR IRT_P32 IRT_THREAD
+        IRT_PROTO IRT_FUNC IRT_P64 IRT_CDATA IRT_TAB IRT_UDATA IRT_FLOAT
+        IRT_NUM IRT_I8 IRT_U8 IRT_I16 IRT_U16 IRT_INT IRT_U32 IRT_I64 IRT_U64
+        IRT_SOFTFP
+    ''',
+    'IR__MAX': '''
+        IR_LT IR_GE IR_LE IR_GT IR_ULT IR_UGE IR_ULE IR_UGT IR_EQ IR_NE IR_ABC
+        IR_RETF IR_NOP IR_BASE IR_PVAL IR_GCSTEP IR_HIOP IR_LOOP IR_USE IR_PHI
+        IR_RENAME IR_PROF IR_KPRI IR_KINT IR_KGC IR_KPTR IR_KKPTR IR_KNULL
+        IR_KNUM IR_KINT64 IR_KSLOT IR_BNOT IR_BSWAP IR_BAND IR_BOR IR_BXOR
+        IR_BSHL IR_BSHR IR_BSAR IR_BROL IR_BROR IR_ADD IR_SUB IR_MUL IR_DIV
+        IR_MOD IR_POW IR_NEG IR_ABS IR_LDEXP IR_MIN IR_MAX IR_FPMATH IR_ADDOV
+        IR_SUBOV IR_MULOV IR_AREF IR_HREFK IR_HREF IR_NEWREF IR_UREFO IR_UREFC
+        IR_FREF IR_STRREF IR_LREF IR_ALOAD IR_HLOAD IR_ULOAD IR_FLOAD IR_XLOAD
+        IR_SLOAD IR_VLOAD IR_ASTORE IR_HSTORE IR_USTORE IR_FSTORE IR_XSTORE
+        IR_SNEW IR_XSNEW IR_TNEW IR_TDUP IR_CNEW IR_CNEWI IR_BUFHDR IR_BUFPUT
+        IR_BUFSTR IR_TBAR IR_OBAR IR_XBAR IR_CONV IR_TOBIT IR_TOSTR IR_STRTO
+        IR_CALLN IR_CALLA IR_CALLL IR_CALLS IR_CALLXS IR_CARG
+    ''',
+    'LJ_VMST__MAX': '''
+        LJ_VMST_INTERP LJ_VMST_LFUNC LJ_VMST_FFUNC LJ_VMST_CFUNC LJ_VMST_GC
+        LJ_VMST_EXIT LJ_VMST_RECORD LJ_VMST_OPT LJ_VMST_ASM
+    ''',
+    'MM__MAX': '''
+        MM_index MM_newindex MM_gc MM_mode MM_eq MM_len MM_lt MM_le MM_concat
+        MM_call MM_add MM_sub MM_mul MM_div MM_mod MM_pow MM_unm MM_metatable
+        MM_tostring MM_new MM_pairs MM_ipairs
+    ''',
+}
+
+
 class EnumBasedList(object):
     def __init__(self, max_enum_member, enum_name, map_func=None,
                  *map_func_args):
@@ -947,10 +1111,18 @@ class EnumBasedList(object):
                     self.__enum_name or 'anonymous',
                     self.__max_enum_member,
                 )
-                raise dbg.error('{}: {}'.format(msg, e))
+                if self.__max_enum_member not in ENUM_FALLBACK:
+                    raise dbg.error('{}: {}'.format(msg, e))
+                # The debug info may leave out an enum used only through
+                # its constants: take the built-in members.
+                dbg.write('luajit_dbg.py: {}, taking the built-in '
+                          'list\n'.format(msg))
+                names = ENUM_FALLBACK[self.__max_enum_member].split()
+            else:
+                names = [str(dbg.cast_typeof(max_enum_value, i))
+                         for i in range(max_enum_value)]
             items = []
-            for i in range(max_enum_value):
-                item = str(dbg.cast_typeof(max_enum_value, i))
+            for item in names:
                 if self.__map_func:
                     item = self.__map_func(item, *self.__map_func_args)
                 items.append(item)

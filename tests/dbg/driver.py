@@ -76,6 +76,11 @@ def main():
         if not plan.get('core'):
             if plan.get('cwd'):
                 ex('cd ' + plan['cwd'])
+            # The environment of gdb, not of the inferior: two runs of a
+            # scenario allocate the same.
+            for k in sorted(os.environ):
+                if k.startswith('DBG_'):
+                    ex('unset environment ' + k)
             for k, v in sorted(plan.get('env', {}).items()):
                 ex('set environment {}={}'.format(k, v))
             ex('set args ' + ' '.join(plan.get('args', [])))
