@@ -58,6 +58,18 @@ class EnvTest(unittest.TestCase):
                            cwd=C.ROOT)
         return p.stdout
 
+    def test_parse_bt_pac(self):
+        # The frame names of `bt` text, as the stops and window layers
+        # compare them with lj-bt's; gdb on aarch64 prints "[PAC]" after
+        # an address it took the pointer authentication code off.
+        text = ('#0  lj_cf_print (L=0x1) at lib_base.c:497\n'
+                '#1  0x0000fffff7e5631c [PAC] in ?? ()\n'
+                '#2  0x0000aaaab0001234 [PAC] in lua_pcall (L=0x1)\n'
+                '#3  0x00000000004a5f00 in main ()\n')
+        self.assertEqual([(f['level'], f['name']) for f in C.parse_bt(text)],
+                         [(0, 'lj_cf_print'), (1, '??'), (2, 'lua_pcall'),
+                          (3, 'main')])
+
     def test_missing_names(self):
         fake = self.wd.write('fake.py', 'mref = gcref = gcval = funcproto = '
                              'typenames = itypemap = None\n')

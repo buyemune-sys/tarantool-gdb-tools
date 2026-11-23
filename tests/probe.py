@@ -19,7 +19,10 @@ import gdb
 
 import __main__ as M
 
-RX_BT = re.compile(r'^#(\d+)\s+(?:0x[0-9a-f]+ in )?(.*?)(?: \(.*)?$')
+# gdb on aarch64 marks a return address it took the pointer
+# authentication code off: "#1  0x0000fffff7e5631c [PAC] in ?? ()".
+RX_BT = re.compile(r'^#(\d+)\s+(?:0x[0-9a-f]+(?: \[PAC\])? in )?(.*?)'
+                   r'(?: \(.*)?$')
 
 
 def probe_parse_bt(text):

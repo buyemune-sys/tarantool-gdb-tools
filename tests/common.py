@@ -462,7 +462,11 @@ def norm_name(f):
     return f['name'] or '??'
 
 
-RX_BT = re.compile(r'^#(\d+)\s+(?:0x[0-9a-f]+ in )?(.*?)(?: \(.*)?$')
+# gdb on aarch64 marks a return address it took the pointer
+# authentication code off: "#1  0x0000fffff7e5631c [PAC] in ?? ()"
+# (CI run 45154576804, test_window on every arm64 job).
+RX_BT = re.compile(r'^#(\d+)\s+(?:0x[0-9a-f]+(?: \[PAC\])? in )?(.*?)'
+                   r'(?: \(.*)?$')
 
 
 def parse_bt(text):
