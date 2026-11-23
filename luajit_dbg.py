@@ -1975,7 +1975,11 @@ def dump_stack(L, base=None, top=None):
     top = top or L['top']
     stack = mref('TValue *', L['stack'])
     maxstack = mref('TValue *', L['maxstack'])
-    red = 5 + 3 * LJ_FR2
+    # The red zone is LJ_STACK_EXTRA slots, 5 + 2 * LJ_FR2 in some
+    # LuaJIT versions and 5 + 3 * LJ_FR2 in others: take it from the
+    # stack itself (lj_state.c: stacksize = n + 1 + LJ_STACK_EXTRA,
+    # maxstack = stack + n).
+    red = int(L['stacksize']) - 1 - int(maxstack - stack)
 
     dump = [
         '{padding} Red zone: {nredslots: >2} slots {padding}'.format(

@@ -212,7 +212,11 @@ def check_stack(case, scen, key):
     base, top, size = v('base'), v('top'), v('stacksize')
     tv = 8
     nslots = (maxstack - stack) // tv
-    red = st['red']
+    # lj_state.c: stacksize = n + 1 + LJ_STACK_EXTRA, maxstack = stack +
+    # n; the red zone is the LJ_STACK_EXTRA slots above maxstack, 7 or 8
+    # with LJ_FR2 depending on the LuaJIT version.
+    red = size - 1 - nslots
+    case.assertEqual(st['red'], red, 'red zone size')
     case.assertEqual([s['addr'] for s in st['red_slots']],
                      [maxstack + tv * i for i in range(red, 0, -1)])
     case.assertEqual(st['size'], nslots)
