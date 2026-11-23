@@ -1,0 +1,134 @@
+name: source
+
+# The extensions against Tarantool built from source as a dynamic PIE
+# with DWARF (tests/build-tarantool.sh), with the default GC64 LuaJIT
+# and with LUAJIT_ENABLE_GC64=OFF.  The official packages of 3.x that
+# test.yml, dbg.yml and cores.yml run are static non-PIE GC64 builds:
+# their addresses are the same before and after gdb starts the program,
+# so an address an extension keeps from before the start (or from
+# another process) goes unnoticed there.  The tests of tests/dbg run
+# with the files of this repository; lj-bt takes the gdb extensions of
+# the source tree it was built from (luajit_dbg.py of its LuaJIT,
+# tools/tarantool-gdb.py), as test.yml takes those of each release.
+#
+# The build of a tag and a variant is cached (the key has the hash of
+# tests/build-tarantool.sh): only the first run of a key builds.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '53 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: tarantool ${{ matrix.version }} ${{ matrix.variant }} PIE
+    runs-on: ubuntu-24.04
+    # New: before this job nothing ran on a PIE or a non-GC64 build.
+    # Report, do not fail the workflow, until it is green on CI.
+    continue-on-error: true
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.9.0']
+        variant: [gc64, nogc64]
+    env:
+      LJBT_SEEDS: ${{ github.event_name == 'schedule' && '200' || '50' }}
+      LJBT_STOPS: ${{ github.event_name == 'schedule' && '500' || '100' }}
+      LJBT_KEEP: 1
+      DBG_KEEP: 1
+      BUILD: ${{ github.workspace }}/.ljbt-src/${{ matrix.version }}-${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gdb and pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb python3-pytest
+          gdb --version | head -1
+          python3 -m pytest --version
+
+      # The binary links the libraries of the image (ICU, readline,
+      # OpenSSL): the image is in the key.
+      - name: Restore the Tarantool build
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.BUILD }}
+          key: tarantool-src-${{ matrix.version }}-${{ matrix.variant }}-ubuntu-24.04-${{ runner.arch }}-${{ hashFiles('tests/build-tarantool.sh') }}
+
+      # What tests/build-tarantool.sh lists; the image has most of it,
+      # tarantool's own CI adds libreadline-dev only.
+      - name: Install the build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y cmake autoconf automake libtool \
+            libreadline-dev libncurses-dev libicu-dev libssl-dev zlib1g-dev
+
+      - name: Build Tarantool ${{ matrix.version }} ${{ matrix.variant }}
+        env:
+          LJBT_BUILD_DIR: ${{ runner.temp }}/tarantool-build
+        run: |
+          tests/build-tarantool.sh ${{ matrix.version }} ${{ matrix.variant }} "$BUILD" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}/src" >> "$GITHUB_ENV"
+          mkdir -p "${{ runner.temp }}/src"
+
+      # Right after the build, not in a post step at the end: a failed
+      # test must not cost the next run the build.
+      - name: Save the Tarantool build
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.BUILD }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      # The runners pipe cores to a program: a file for the kernel's
+      # core of the cores group (test_cores.py).
+      - name: Let the kernel write cores to files
+        run: sudo sysctl -w kernel.core_pattern=core.%p
+
+      - name: luajit_dbg.py tests
+        run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: LuaJIT's debugger tests
+        if: ${{ !cancelled() }}
+        run: tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: tarantool-gdb.py tests
+        if: ${{ !cancelled() }}
+        run: tests/dbg/run.sh tarantool 2>&1 | tee "$TMPDIR/run-tarantool.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: tarantool's gdb tests
+        if: ${{ !cancelled() }}
+        run: tests/dbg/run.sh upstream-tarantool 2>&1 | tee "$TMPDIR/run-upstream-tarantool.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Thread stacks in cores
+        if: ${{ !cancelled() }}
+        run: tests/dbg/run.sh cores 2>&1 | tee "$TMPDIR/run-cores.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: lj-bt layers oracle, core, random, tail, cli, env, window
+        if: ${{ !cancelled() }}
+        run: tests/run.sh oracle core random tail cli env window 2>&1 | tee "$TMPDIR/run-ljbt.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-logs-${{ matrix.version }}-${{ matrix.variant }}
+          # The plans, results and gdb logs of every run; cmake.log and
+          # build.log of a failed build.
+          path: |
+            ${{ runner.temp }}/src
+            ${{ runner.temp }}/tarantool-build/*.log
+          if-no-files-found: ignore
+          retention-days: 14
