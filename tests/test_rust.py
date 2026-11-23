@@ -396,13 +396,18 @@ class PlainMixin(RustRun):
     @classmethod
     def script(cls, probe, gcore):
         p = 'ljbt-rust-probe {} --tag {{}} {}'.format(probe, gcore)
+        # Frames other than #0 selected (test_frame_selected): Rust ones
+        # at the targets, the VM band behind the trace at the FFI entry.
+        sel = ' --frames 1,2,4'
         return '\n'.join([
             'set breakpoint pending on',
             # The targets of chain.lua.
             'break lbox_session_exists if $ljbt_arg(L, 0) >= 4000',
-            'commands', 'silent', p.format('target'), 'continue', 'end',
+            'commands', 'silent', p.format('target') + sel, 'continue',
+            'end',
             'break box_space_id_by_name if len >= 40',
-            'commands', 'silent', p.format('target'), 'continue', 'end',
+            'commands', 'silent', p.format('target') + sel, 'continue',
+            'end',
             # The error of the error scenario, not the others (the JIT
             # throws one whenever a trace recording aborts).
             'break lj_err_throw if $ljbt_err_is(L, "ljbt-boom")',
@@ -410,7 +415,8 @@ class PlainMixin(RustRun):
             # The entry of the FFI function, the last call of the loop.
             'break ljbt_ffi_hot if ({} & 0xffffffff) >= 4000'.format(
                 arg_register()),
-            'commands', 'silent', p.format('ffi-entry'), 'continue', 'end',
+            'commands', 'silent', p.format('ffi-entry') + ' --frames 2',
+            'continue', 'end',
             'run',
             # The abort build stops here, at the SIGABRT.
             'python',
@@ -567,6 +573,33 @@ class RustFrameStopMixin(object):
         self.assertEqual(rec['language'], ['auto', 'rust'])
         self.assertEqual(rec['language_after'], rec['language'])
         self.assertEqual(rec['language_error'], rec['language'])
+
+    def test_frame_selected(self):
+        # `frame N`, N > 0, then bt and lj-bt: in a Rust frame (and in the
+        # VM band behind a trace), lj-bt goes to C and back with that
+        # frame selected; its invalidation of the frame cache makes gdb
+        # find the frame again, through the trace unwinder, and `set
+        # language auto` takes the language from it.  Both show the same
+        # Lua frames, no mark; the frame stays selected, the language
+        # what it was.
+        rust = 0
+        for r in self.recs:
+            for s in r.get('selected') or []:
+                with self.subTest(tag=r['tag'], seq=r['seq'], n=s['n']):
+                    self.assertNotIn('error', s)
+                    self.assertEqual(
+                        (s['frame'], s['frame_bt'], s['frame_after']),
+                        (s['n'],) * 3)
+                    self.assertEqual(s['language_bt'], s['language'])
+                    self.assertEqual(s['language_after'], s['language'])
+                    self.assertTrue(C.lua_lines(s['text']), s['text'])
+                    self.assertEqual(C.lua_lines(s['bt']),
+                                     C.lua_lines(s['text']))
+                    self.assertEqual(C.mark_lines(s['bt']), [])
+                    self.assertEqual(C.mark_lines(s['text']), [])
+                    if s['language'] == ['auto', 'rust']:
+                        rust += 1
+        self.assertGreaterEqual(rust, 2)
 
     core_apart = ('ffi-entry',)
 

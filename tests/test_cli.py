@@ -228,6 +228,16 @@ class CliTest(unittest.TestCase):
         self.assertTrue(r['text_lua'])
         self.assertEqual(r['bt_lua'], r['text_lua'])
 
+    @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
+    def test_frame_kept(self):
+        # `frame 2`, then lj-bt and lj-bt --all-fibers: frame 2 is still
+        # selected (lj-bt invalidates gdb's frame cache, which selects
+        # frame #0), the registers are those of frame 2.
+        r = self.one(11, 'frame-kept')
+        self.assertEqual(r['before']['frame'], 2)
+        self.assertEqual(r['after'], r['before'])
+        self.assertEqual(r['after_all'], r['before'])
+
 
 if __name__ == '__main__':
     unittest.main()

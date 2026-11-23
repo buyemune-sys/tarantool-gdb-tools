@@ -180,6 +180,15 @@ class Cli(object):
         if not self.tt:
             return
         self.snapshot(n, 'other')
+        # A frame other than #0 selected: lj-bt and --all-fibers keep it.
+        run('frame 2')
+        before = state()
+        run('lj-bt')
+        after = state()
+        run('lj-bt --all-fibers')
+        self.rec(n, 'frame-kept', before=before, after=after,
+                 after_all=state())
+        run('frame 0')
         fid = self.sleeper_fid()
         if fid is None:
             self.rec(n, 'sleeper-stepi', error='no cli-sleeper fiber')

@@ -1,6 +1,7 @@
 # gdb side of the `rust` group (tests/test_rust.py): sourced after probe.py.
 #
-#   ljbt-rust-probe FILE --tag TAG [--fiber ID] [--gcore DIR] [OPTS...]
+#   ljbt-rust-probe FILE --tag TAG [--fiber ID] [--gcore DIR] [--frames N,..]
+#                   [OPTS...]
 #
 # runs `ljbt-probe` (after `tt-fiber ID`, if given) with OPTS and appends
 # its record to FILE, with:
@@ -17,6 +18,8 @@
 #   language [the language setting, the current language] before
 #            ljbt-probe; language_after, the same after it, and
 #            language_error after an `lj-bt` that fails (bad flags)
+#   selected with --frames: for each N, `frame N`, `bt`, `lj-bt` there
+#            (rust_selected), then back to frame 0
 #
 #   ljbt-rust-fibers FILE RESULTS
 #
@@ -67,6 +70,32 @@ def rust_language():
     return [gdb.parameter('language'), cur() if cur else None]
 
 
+def rust_selected(n):
+    '''`frame n`, then `bt` and `lj-bt` there: their output, the frame
+    selected and the language before and after each (lj-bt switches to C
+    and back; with a frame other than #0 selected, `set language auto`
+    goes by that frame, which lj-bt's own invalidation of the frame cache
+    makes gdb find again, through the trace unwinder).  Back to frame 0
+    at the end.'''
+    res = {'n': n}
+    try:
+        gdb.execute('frame {}'.format(n), False, True)
+        res['frame'] = gdb.selected_frame().level()
+        res['name'] = gdb.selected_frame().name()
+        res['language'] = rust_language()
+        res['bt'] = gdb.execute('bt', False, True)
+        res['frame_bt'] = gdb.selected_frame().level()
+        res['language_bt'] = rust_language()
+        res['text'] = gdb.execute('lj-bt', False, True)
+        res['frame_after'] = gdb.selected_frame().level()
+        res['language_after'] = rust_language()
+    except gdb.error as e:
+        res['error'] = str(e)
+    finally:
+        gdb.execute('frame 0', False, True)
+    return res
+
+
 def rust_reset_fiber():
     FU = getattr(M, 'FiberUnwinder', None)
     if FU is not None:
@@ -82,7 +111,7 @@ class RustProbeCommand(gdb.Command):
     def invoke(self, arg, from_tty):
         argv = gdb.string_to_argv(arg)
         path, rest = argv[0], []
-        tag, fiber, gcore = None, None, None
+        tag, fiber, gcore, sel = None, None, None, []
         i = 1
         while i < len(argv):
             if argv[i] == '--tag':
@@ -90,6 +119,9 @@ class RustProbeCommand(gdb.Command):
                 i += 2
             elif argv[i] == '--fiber':
                 fiber = int(argv[i + 1])
+                i += 2
+            elif argv[i] == '--frames':
+                sel = [int(n) for n in argv[i + 1].split(',')]
                 i += 2
             elif argv[i] == '--gcore':
                 gcore = argv[i + 1]
@@ -126,6 +158,7 @@ class RustProbeCommand(gdb.Command):
             rec['solibs'] = {}
             for f in (rec['ljbt'] or {}).get('frames', []):
                 rec['solibs'][f['pc']] = gdb.solib_name(int(f['pc'], 16))
+            rec['selected'] = [rust_selected(n) for n in sel]
         finally:
             if fiber is not None:
                 rust_reset_fiber()

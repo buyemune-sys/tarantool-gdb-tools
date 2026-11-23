@@ -2357,8 +2357,40 @@ def ljbt_default_L(arg_L):
     return defL, hdr, other_fiber
 
 
+class LJBTKeepFrame(object):
+    '''with LJBTKeepFrame(): gdb.invalidate_cached_frames drops the frame
+    selection (frame #0 is selected again); the frame selected before the
+    block, by its level, is selected again on the way out.  Inside
+    LJBTLangC, so that `set language auto` at its end goes by that frame.'''
+
+    def __enter__(self):
+        try:
+            self.level = gdb.selected_frame().level()
+        except gdb.error:
+            self.level = None
+        return self
+
+    def __exit__(self, *exc):
+        if not self.level:
+            return False
+        try:
+            f = gdb.newest_frame()
+            for _ in range(self.level):
+                f = f.older() if f is not None else None
+            if f is not None:
+                f.select()
+        except gdb.error:
+            pass
+        return False
+
+
 @ljbt_in_c
 def ljbt_backtrace(arg_L, limit, out, as_json=False):
+    with LJBTKeepFrame():
+        ljbt_render(arg_L, limit, out, as_json)
+
+
+def ljbt_render(arg_L, limit, out, as_json):
     defL, hdr, other_fiber = ljbt_default_L(arg_L)
     gdb.invalidate_cached_frames()
     cframes, unotes = ljbt_walk_cstack(other_fiber, limit)
@@ -2559,6 +2591,7 @@ With -v the frames whose callee cannot be verified say so.
         u = FU.instance()
         orig = u.fiber()
         docs = []
+        keep = LJBTKeepFrame().__enter__()
         try:
             # Every fiber, also one with no storage.lua.stack: a fiber made
             # from C or Rust may run Lua in a lua_State of its own (or in
@@ -2584,6 +2617,7 @@ With -v the frames whose callee cannot be verified say so.
         finally:
             u.set_fiber(orig)
             gdb.invalidate_cached_frames()
+            keep.__exit__()
         if as_json:
             res.append('[' + ', '.join(docs) + ']')
 
