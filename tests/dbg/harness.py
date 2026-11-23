@@ -201,7 +201,7 @@ class Scenario(object):
 
     def __init__(self, name, script, breaks, cmds, setup=(), prep=(),
                  sources=None, deferred=False, live_only=None,
-                 timeout=120, env=None, gdb_env=None):
+                 timeout=120, env=None, gdb_env=None, keep_core=False):
         self.name = name
         self.script = script
         self.breaks = list(breaks)
@@ -215,6 +215,9 @@ class Scenario(object):
         self.timeout = timeout
         self.env = env or {}            # of the inferior
         self.gdb_env = gdb_env or {}    # of gdb
+        # Leave the core file for a later session (othercore.py), which
+        # removes it.
+        self.keep_core = keep_core
         self._res = None
 
     def variant(self, name, **kw):
@@ -222,7 +225,8 @@ class Scenario(object):
         args = dict(script=self.script, breaks=self.breaks, cmds=self.cmds,
                     setup=self.setup, prep=self.prep, sources=self.sources,
                     deferred=self.deferred, live_only=self.live_only,
-                    timeout=self.timeout, env=self.env, gdb_env=self.gdb_env)
+                    timeout=self.timeout, env=self.env, gdb_env=self.gdb_env,
+                    keep_core=self.keep_core)
         args.update(kw)
         return Scenario(name, **args)
 
@@ -291,7 +295,7 @@ class Scenario(object):
             with open(os.path.join(wd, 'oracle.json')) as fh:
                 res['oracle'] = json.load(fh)
         self._res = res
-        if KEEP != 'cores' and os.path.exists(core):
+        if KEEP != 'cores' and not self.keep_core and os.path.exists(core):
             os.unlink(core)
         return res
 
