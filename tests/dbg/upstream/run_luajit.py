@@ -39,9 +39,16 @@ HOOK = ('every trace of tarantool starts with its own XLOAD/BAND/EQ check, '
         'the IR is not the one of plain LuaJIT')
 EARLY_GC = ('before 3.7 the first GC cycle runs at startup before '
             'tarantool_L is set: no Lua state to show')
+# CI run 45128549373: at the stop after `n` in lj_cf_dofile, gdb says
+# "value has been optimized out" for fname; 3.0.2, 3.1.2, 3.4.2 and 3.7+
+# arm64 builds keep it.
+OPTIMIZED_OUT = ('the arm64 build of {} has no location for fname of '
+                 'lj_cf_dofile at the stop of the test: "value has been '
+                 'optimized out"')
+NO_FNAME_ARM64 = [(3, 2), (3, 3), (3, 5), (3, 6)]
 
 
-def tarantool_skips(version):
+def tarantool_skips(version, arch):
     '''{class name: why it cannot pass against this tarantool}.
     tests/dbg/test_luajit.py has these checks in the form tarantool
     allows.'''
@@ -60,14 +67,19 @@ def tarantool_skips(version):
         for c in ('Pause', 'Propagate', 'Atomic', 'SweepString', 'Sweep',
                   'Finalize'):
             skips['TestGCState' + c] = EARLY_GC
+    if arch == 'arm64' and version[:2] in NO_FNAME_ARM64:
+        skips['TestLJStr'] = OPTIMIZED_OUT.format(
+            '.'.join(map(str, version)))
     return skips
 
 
-def tarantool_version(tarantool):
-    out = subprocess.run([tarantool, '-e', 'print(_TARANTOOL) os.exit(0)'],
+def tarantool_info(tarantool):
+    '''((major, minor, patch), jit.arch) of the binary.'''
+    out = subprocess.run([tarantool, '-e',
+                          'print(_TARANTOOL, jit.arch) os.exit(0)'],
                          stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                         universal_newlines=True, timeout=60).stdout
-    return tuple(int(x) for x in out.strip().split('-')[0].split('.'))
+                         universal_newlines=True, timeout=60).stdout.split()
+    return tuple(int(x) for x in out[0].split('-')[0].split('.')), out[1]
 
 
 def main():
@@ -98,8 +110,7 @@ def main():
                 gco = r'lj-gco command initialized\n'
                 mod.TestLoad.pattern = mod.TestLoad.pattern.replace(
                     gco, gco + r'lj-gctop command initialized\n')
-        for name, why in tarantool_skips(
-                tarantool_version(tarantool)).items():
+        for name, why in tarantool_skips(*tarantool_info(tarantool)).items():
             setattr(mod, name, unittest.skip(why)(getattr(mod, name)))
         prog = unittest.main(module=mod, argv=[sys.argv[0]] + sys.argv[1:],
                              exit=False, verbosity=2)
