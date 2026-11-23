@@ -1949,7 +1949,10 @@ def dump_framelink(L, fr):
         addr=dump_framelink_slot_address(fr),
         pp='PP' if frame_ispcall(fr) else '{frname}{p}'.format(
             frname=frametypes(int(frame_type(fr))),
-            p='P' if frame_typep(fr) & FRAME_P else ''
+            # The link of a Lua frame is the return PC: its FRAME_P bit
+            # is a bit of the address.
+            p='P' if frame_type(fr) != FRAME['LUA'] and
+            frame_typep(fr) & FRAME_P else ''
         ),
         d=dbg.cast('TValue *', fr) - dbg.cast('TValue *', frame_prev(fr)),
         f=dump_lj_tv_func(fr - LJ_FR2),  # noqa: F821 # Generated.

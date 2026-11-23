@@ -320,6 +320,19 @@ class TestStack(DbgCase):
                  s['text'] != 'dummy L']
         self.assertIn('fast function coroutine.wrap.aux', funcs[0])
 
+    def test_lua_frame_has_no_p(self):
+        # FRAME_P is a bit of the frame type for C, continuation and
+        # vararg frames; the link of a Lua frame is the return PC, whose
+        # bit 2 is an address bit, not a protected call.
+        n = 0
+        for scen, key in ((BASIC, 'stack'), (STACK, 'co'), (STACK, 'main')):
+            st = parse_stack(self.out(scen, key))
+            for s in st['slots']:
+                if s.get('type', '').startswith('L'):
+                    self.assertEqual(s['type'], 'L', s['text'])
+                    n += 1
+        self.assertGreater(n, 4)
+
 
 # lj-tv, lj-gco, lj-str, lj-tab ######################################
 
