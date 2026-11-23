@@ -2200,13 +2200,19 @@ from_tt_list
             container, _, field = expr.rpartition(field_sep)
             return container, field
 
+        # Nothing to tell for an expression with no field ('*$list', a
+        # symbol not in the table) or a field of a struct not in it.
         container, field = split_last_field(list_exp)
-        if container:
+        if not container:
+            return None
+        try:
             container = gdb.parse_and_eval(container)
             if container.type.code == gdb.TYPE_CODE_PTR:
                 container = container.dereference()
             container_info = '{}::{}'.format(container.type.tag, field)
             container_info = ContainerFieldInfo(container_info)
+        except (gdb.error, AssertionError, TypeError):
+            return None
 
         return lut.lookup_entry_info_by_container(container_info)
 
@@ -2336,6 +2342,16 @@ from_tt_list
 
     def __init__(self, val):
         assert self.__class__.__instance_exists, "__instance_exists must be True"
+        try:
+            self.__init(val)
+        except BaseException:
+            # The traceback keeps this instance alive: without the reset no
+            # list would be printed again in this session.
+            self.__class__.__instance_exists = False
+            self.__failed = True
+            raise
+
+    def __init(self, val):
         assert equal_to_any_types(val.type, (
                 Rlist.gdb_type,
                 Stailq.gdb_type,
@@ -2426,6 +2442,8 @@ from_tt_list
             self.items = []
 
     def __del__(self):
+        if getattr(self, '_TtListPrinter__failed', False):
+            return
         assert self.__class__.__instance_exists
         self.__class__.__instance_exists = False
 
@@ -2453,11 +2471,13 @@ from_tt_list
             self.entry_printer.fields = config_fields.split(',')
             self.entry_printer.enabled = True
 
-        # Items already prepared, just yield'em all
-        for item in self.items:
-            yield self.child(entry_info, item)
-
-        self.entry_printer.enabled = False
+        # Items already prepared, just yield'em all.  gdb may stop early
+        # (an error, 'print elements'): the entry printer goes off anyway.
+        try:
+            for item in self.items:
+                yield self.child(entry_info, item)
+        finally:
+            self.entry_printer.enabled = False
 
 pp.add_printer('rlist', '^rlist$', TtListPrinter)
 pp.add_printer('stailq', '^stailq$', TtListPrinter)

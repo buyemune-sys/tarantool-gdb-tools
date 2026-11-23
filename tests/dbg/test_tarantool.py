@@ -147,6 +147,8 @@ else:
     TXN_FIRST = '((struct txn *)((char *)txm.all_txs.next - ' \
         '(long)&((struct txn *)0)->in_all_txs))'
 
+BOX_PREP.append('set $rl = &{}->on_commit'.format(TXN_FIRST))
+
 QUORUM = 'replicaset_on_quorum_change' if H.VERSION_TUPLE >= (3, 6) \
     else 'replicaset_on_quorum_gain'
 # The entries of the list table that resolve: symbols and entry infos.
@@ -186,6 +188,12 @@ BOX_CMDS = [
     ('stmts', 'tt-list -entry-info txn_stmt::next -- {}->stmts'.format(
         TXN_FIRST)),
     ('stmts.len', 'eval:$dbg_stailq_len(&{}->stmts)'.format(TXN_FIRST)),
+    # A list the table cannot tell, a broken -entry-info, and a list
+    # printed after them.
+    ('list.unknown', 'tt-list -- *$rl'),
+    ('list.bad_entry', 'tt-list -entry-info no_such_type::link -- '
+     'main_cord.alive'),
+    ('list.after', 'print main_cord.alive'),
     ('quorum', 'tt-list -fields run -- ' + QUORUM),
     ('quorum.len', 'eval:$dbg_rlist_len(&{})'.format(QUORUM)),
     ('lut', LUT_DUMP),
@@ -696,6 +704,17 @@ class TestLists(DbgCase):
             self.assertEqual(err, 'No items left.', mode)
         self.assertIn('rlist<fiber::link> of length {},'.format(n),
                       self.out(BOX, 'walk.{}'.format(n + 2)))
+
+    def test_unknown(self):
+        # No entry type for a list the table cannot tell: a hint and the
+        # items.  A list printed after an error is printed as ever.
+        out = self.out(BOX, 'list.unknown')
+        self.assertIn('failed to identify the type of the list entries', out)
+        self.assertRegex(out, r'rlist<\?> of length \d+,')
+        self.assertIn('no_such_type', self.out(BOX, 'list.bad_entry'))
+        self.assertTrue(value(self.out(BOX, 'list.after')).startswith(
+            'rlist<fiber::link> of length {},'.format(
+                self.value(BOX, 'alive.len'))))
 
     def test_quorum(self):
         # The quorum triggers (gain and loss up to 3.5, change since 3.6):
