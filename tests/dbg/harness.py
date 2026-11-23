@@ -210,6 +210,11 @@ class Scenario(object):
             else:
                 res['core'] = {'fatal': 'no core file was written',
                                'cmds': {}, 'load': '', 'setup': []}
+        # Read now: a test class that ran the scenario removes the work
+        # directory when it is done, the next ones use the cached result.
+        if os.path.exists(os.path.join(wd, 'oracle.json')):
+            with open(os.path.join(wd, 'oracle.json')) as fh:
+                res['oracle'] = json.load(fh)
         self._res = res
         if KEEP != 'cores' and os.path.exists(core):
             os.unlink(core)
