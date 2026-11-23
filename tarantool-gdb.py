@@ -718,7 +718,11 @@ if MP_DECIMAL is not None:
     MsgPackPrinter.register_ext_printer(int(MP_DECIMAL), 'DECIMAL', MsgPackExtPrinterDecimal)
 
     class DecNumber:
+        # DECIMAL_MAX_DIGITS of decimal.h, 38 and 76 since 3.5: a macro,
+        # but DECIMAL_MAX_STR_LEN = DECIMAL_MAX_DIGITS + 14 is in the DWARF.
         DECIMAL_MAX_DIGITS = 38
+        if find_value('DECIMAL_MAX_STR_LEN') is not None:
+            DECIMAL_MAX_DIGITS = int(find_value('DECIMAL_MAX_STR_LEN')) - 14
         DECNUMDIGITS = DECIMAL_MAX_DIGITS
 
         DECDPUN = 4
@@ -951,7 +955,11 @@ if MP_DECIMAL is not None:
         def to_string(self):
             return str(self.val)
 
-    pp.add_printer('DecNumber', '^decNumber$', DecNumberPrinter)
+    # decNumber is a typedef of an anonymous struct: in a C++ unit the
+    # struct takes the name, in a C one it has none and only the typedef
+    # (decNumber or decimal_t) is there to match; which one gdb finds
+    # depends on the symtabs it expanded first.
+    pp.add_printer('DecNumber', '^(decNumber|decimal_t)$', DecNumberPrinter)
 
 
 ################################################################

@@ -51,6 +51,7 @@ MP_SAMPLES = [
     ('bin', "'\\xc4\\x03abc'"),
     ('decimal', 'msgpack.encode(dec)'),
     ('decimal_int', "msgpack.encode(decimal.new('123456789012345'))"),
+    ('decimal_long', 'msgpack.encode(dec_long)'),
     ('uuid', 'msgpack.encode(u)'),
     ('datetime', 'msgpack.encode(dt)'),
     ('datetime_tz', 'msgpack.encode(dt_tz)'),
@@ -103,6 +104,13 @@ ORACLE.sleeper = sleeper:id()
 ORACLE.txner = txner:id()
 
 local dec = decimal.new('-12345.678')
+-- As many digits as the build has: 38, 76 since 3.5.
+local dec_long = decimal.new(string.rep('7', 36) .. '.25')
+local ok, d76 = pcall(decimal.new, string.rep('7', 70) .. '.123456')
+if ok and #tostring(d76) > 60 then
+    dec_long = d76
+end
+ORACLE.dec_long = tostring(dec_long)
 local u = uuid.fromstr('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
 local dt = datetime.new{year = 2024, month = 2, day = 29, hour = 13,
                         min = 14, sec = 15, nsec = 123000000,
@@ -732,6 +740,9 @@ class TestMsgPack(DbgCase):
     def test_decimal(self):
         self.assertEqual(self.mp('decimal'), 'dec:' + BOX.oracle()['dec'])
         self.assertEqual(self.mp('decimal_int'), 'dec:123456789012345')
+        # All the digits of the build (76 since 3.5).
+        self.assertEqual(self.mp('decimal_long'),
+                         'dec:' + BOX.oracle()['dec_long'])
 
     def test_uuid(self):
         self.assertEqual(self.mp('uuid'), BOX.oracle()['uuid'])
