@@ -141,8 +141,8 @@ The last example leaves frames out (the gaps in the numbers); every line shown i
 | Group | What |
 |---|---|
 | `oracle` | fixed chains: the Lua frames must match what the scenario recorded with `debug.getinfo` right before the call, the C frames must match `bt -no-filters`, every frame link appears once, and there is no `!!` |
-| `random` | chains generated from a seed out of 15 kinds of steps (call, tail call, pcall, xpcall, coroutine resume and wrap, `table.sort` comparator, `gsub` callback, `__index`, `__call`, `__add`, another fiber, a hot loop under JIT, an error with an `xpcall` handler, an FFI callback from `qsort`), checked against the generator's model |
-| `stops` | stops at random points of the VM - `SIGPROF` of sysprof in mode D, which walks no stack - on a mixed load: no Python error, the C frames kept, the outer frames found, every mismatch marked |
+| `random` | chains generated from a seed out of 15 kinds of steps (call, tail call, pcall, xpcall, coroutine resume and wrap, `table.sort` comparator, `gsub` callback, `__index`, `__call`, `__add`, another fiber, a hot loop under JIT, an error with an `xpcall` handler, an FFI callback from `qsort`), checked against the generator's model: the frames and lines, how each frame was called, its chunk, its `lua_State` and VM entry |
+| `stops` | stops at random points of the VM - `SIGPROF` of sysprof in mode D, which walks no stack - on a mixed load: no Python error, the C frames kept, the outer frames found, the frames of the load called as its model says, every mismatch marked |
 | `core` | the same chains on `gcore` files, with no live process: the output matches the live one, and a plain `bt` as the first command shows the same Lua frames (one chain stops in a JIT trace); at that stop on the live process, also `bt` after `thread N` and back |
 | `tail` | the table of the tail call heuristic, positive and negative cases |
 | `crash` | the sysprof crashes in mode C (tarantool/tarantool#11184): no Python error, `!!` with the shift of `top_frame`, the right Lua frame (long and racy) |

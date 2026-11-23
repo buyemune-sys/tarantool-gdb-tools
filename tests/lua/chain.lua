@@ -109,7 +109,7 @@ function H.oracle(seq)
     local info = debug.getinfo(level, 'Sl')
     if info == nil then break end
     table.insert(levels, {
-      what = info.what, source = info.source,
+      what = info.what, source = info.source, short_src = info.short_src,
       currentline = info.currentline, linedefined = info.linedefined,
     })
     level = level + 1

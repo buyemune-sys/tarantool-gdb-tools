@@ -172,6 +172,8 @@ def run_chains(wd, program, probe_opts='', timeout=230):
     '''Run a generated program under gdb, stopping at every target call.
     Returns (stops by seq, oracle levels by seq, failures, gdb output).'''
     src = wd.write('chains.lua', program.render())
+    for ch in program.chains:
+        ch.path = src
     probe = wd.file('probe.jsonl')
     tt = 'ljbt-probe-tt {}\n'.format(TT_GDB) if TT_GDB else ''
     script = gdb_prelude() + BREAK_TARGETS.format(
@@ -296,6 +298,52 @@ def check_doc(rec, allow_warnings=False):
     return probs
 
 
+def model_entries(doc):
+    '''The entries of a document that gen.tokens turns into tokens,
+    oldest first: one per token.'''
+    return [e for e in reversed(entries(doc))
+            if not (e['kind'] == 'heuristic' and e.get('probably'))]
+
+
+def attrs_problems(ch, ents, doc):
+    '''The fields of the entries that stand for the first tokens of the
+    model, against the attributes of those tokens (gen.py header): how
+    each frame was called, its chunk, its lua_State and whether that is
+    a coroutine.'''
+    probs = []
+    frames = dict((f['level'], f) for f in doc['frames'])
+    state_L, L_state = {}, {}
+    for i, (e, tok, a) in enumerate(zip(ents, ch.model, ch.attrs)):
+        if ch.jit and a['jit']:
+            break               # Frames of or called from a trace.
+        got, want = {}, {}
+        if tok[0] in ('L', 'B'):
+            got.update(ftype=e.get('ftype'), how=e.get('how'))
+            want.update(ftype=a['ftype'], how=a['how'])
+        if tok[0] in ('L', 'H'):
+            got['chunk'] = e.get('chunk')
+            want['chunk'] = a['chunk'] or ch.path
+        if e.get('L') is not None:
+            if state_L.setdefault(a['state'], e['L']) != e['L'] or \
+                    L_state.setdefault(e['L'], a['state']) != a['state']:
+                got['L'] = e['L']
+                want['L'] = 'state {} of the model'.format(a['state'])
+            f = frames.get(e['cframe_level'])
+            if f is not None and 'coroutine' in f:
+                got['coroutine'], want['coroutine'] = f['coroutine'], a['co']
+        if got != want:
+            probs.append('token {} {}: lj-bt {}, model {}'.format(
+                i, tok, got, want))
+    return probs
+
+
+def oracle_chunk(level):
+    '''The chunk of a debug.getinfo level as lj-bt names it: the whole
+    path of a file, else LuaJIT's short_src.'''
+    src = level.get('source') or ''
+    return src[1:] if src.startswith('@') else level.get('short_src')
+
+
 def check_chain(ch, recs, oracle, tokens, oracle_tokens):
     '''Problems of one generated chain: invariants, the model, the
     oracle.'''
@@ -312,6 +360,8 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
         if mine != ch.model:
             probs.append('model mismatch:\n  lj-bt {}\n  model {}'.format(
                 mine, ch.model))
+        else:
+            probs += attrs_problems(ch, model_entries(doc), doc)
     else:
         # Lines in and around traces come from snapshots: compare the
         # functions only.  Inside a trace the inlined frames are those of
@@ -336,6 +386,9 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
             probs.append('model mismatch (jit{}):\n  lj-bt {}\n  model {}'
                          .format(', in a trace' if in_trace else '',
                                  short, model))
+        else:
+            probs += attrs_problems(ch, [e for e in model_entries(doc)
+                                         if not from_snapshot(e)], doc)
         builtins = set(t[1] for t in ch.model if t[0] == 'B')
         strange = [e['text'] for e in inl
                    if (e.get('fkind') == 'lua' and
@@ -356,6 +409,15 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
             if cur != exp:
                 probs.append('oracle mismatch:\n  lj-bt  {}\n  oracle {}'
                              .format(cur, exp))
+            else:
+                chunks = [e['chunk'] for e in reversed(entries(doc))
+                          if e.get('L') == doc['L'] and
+                          e.get('fkind') == 'lua']
+                exp = [oracle_chunk(lv) for lv in reversed(levels)
+                       if lv['what'] in ('Lua', 'main')]
+                if chunks != exp:
+                    probs.append('oracle chunks:\n  lj-bt  {}\n  oracle {}'
+                                 .format(chunks, exp))
     return probs
 
 

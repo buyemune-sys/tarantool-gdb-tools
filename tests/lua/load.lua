@@ -16,7 +16,7 @@ box.schema.user.grant('guest', 'super', nil, nil, {if_not_exists = true})
 local s = box.schema.space.create('t', {if_not_exists = true})
 s:create_index('pk', {if_not_exists = true})
 
--- Called over iproto (C -> lua_pcall) by the net.box fibers.
+-- Called over iproto (execute_lua_call -> lua_call) by the net.box fibers.
 function _G.handle(id, payload)
   local t = {id = id, payload = payload}
   return t.id, #t.payload

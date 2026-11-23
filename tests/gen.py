@@ -13,8 +13,31 @@
 # Tail calls remove frames; the heuristic line is expected exactly when
 # the head of a tail-call run was called from Lua through a global
 # (plain call, pcall/xpcall, a closure), not when it was a coroutine body.
+#
+# Each token has its attributes in the parallel list Chain.attrs, which
+# lj-bt must show in the fields of the entry:
+#   ftype, how   ('L' and 'B') how the frame was called: the type of its
+#                frame link and lj-bt's words for it (BY_* below)
+#   chunk        ('L' and 'H') the chunk of the function; None is the
+#                generated file itself (Chain.path, set by run_chains)
+#   state        the lua_State, numbered within the chain: tokens of one
+#                state share the "L" of their entries, others differ
+#   co           the frame runs in the VM entry of coroutine.resume (the
+#                VM frame says "coroutine"), not in one of a call from C
+#   jit          the token is the function with the hot loop, or newer:
+#                under JIT its frames may come from a trace or be called
+#                from one, only the older ones are certain
 
 import random
+
+# How a frame was called: (ftype, how) of lj-bt.
+BY_LUA = ('L', [])
+BY_PCALL = ('PP', ['protected by pcall/xpcall'])
+BY_C = ('C', ['called from C: lua_call'])
+BY_CPCALL = ('CP', ['called from C: lua_pcall/cpcall'])
+BY_RESUME = ('CP', ['coroutine body'])
+BY_META = ('M', ['metamethod, continuation lj_cont_ra'])
+BY_FFI_CALLBACK = ('M', ['FFI callback'])
 
 TRANSITIONS = ['call', 'tail', 'pcall', 'xpcall', 'resume', 'wrap', 'sort',
                'gsub', 'index', 'callmt', 'add', 'fiber', 'jit', 'xerror',
@@ -33,6 +56,8 @@ class Chain(object):
         # is usually, not surely, past the start of the trace.
         self.hot = hot
         self.model = []             # Expected tokens, oldest first.
+        self.attrs = []             # Their attributes (the header).
+        self.path = None            # The generated file (run_chains).
         self.jit = 'jit' in transitions
         self.has_fiber = 'fiber' in transitions
 
@@ -98,16 +123,23 @@ class Program(object):
             mline = e('D()')
         e('os.exit(0)')
         for ch in self.chains:
+            # The main chunk is run by lua_pcall (luaT_call), D by the
+            # main chunk or as the body of the driver fiber.
             bottom = []
             if self.driver == 'main':
-                bottom.append(('L', 0, mline))
-            bottom.append(('L', dline, calls[ch.seq]))
-            bottom.append(('B', 'pcall'))
+                bottom.append((('L', 0, mline), BY_CPCALL))
+                bottom.append((('L', dline, calls[ch.seq]), BY_LUA))
+            else:
+                bottom.append((('L', dline, calls[ch.seq]), BY_CPCALL))
+            bottom.append((('B', 'pcall'), BY_LUA))
             # Fiber transitions reset the stack: keep the last part.  The
             # part before is the stack of the creator: fiber.create runs
             # the new fiber at once, the creator waits in it, at the line
             # of its call.
-            full = bottom + ch.model
+            full = [t for t, _ in bottom] + ch.model
+            fulla = [dict(ftype=by[0], how=by[1], chunk=None, state=0,
+                          co=False, jit=False) for _, by in bottom] + \
+                ch.attrs
             ch.parents = []
             start = 0
             for i, t in enumerate(full):
@@ -116,6 +148,7 @@ class Program(object):
                                       [('B', 'lbox_fiber_create')])
                     start = i + 1
             ch.model = full[start:]
+            ch.attrs = fulla[start:]
         return '\n'.join(self.lines) + '\n'
 
     def render_chain(self, ch):
@@ -130,8 +163,21 @@ class Program(object):
         e = self.emit
         if ch.target == 'ffi':
             e('H.name({})'.format(ch.seq))
-        model = []
-        incoming = ('PP', True)     # F_0 is called by pcall in D().
+        model, attrs = [], []
+        st = dict(state=0, co=False, jit=False)
+
+        def put(tok, by=None, chunk=None):
+            if by in (BY_C, BY_FFI_CALLBACK):
+                st['co'] = False        # Called from C: a new VM entry.
+            model.append(tok)
+            attrs.append(dict(st, ftype=by[0] if by else None,
+                              how=by[1] if by else None, chunk=chunk))
+
+        def new_state(co):
+            st.update(state=st['state'] + 1, co=co)
+
+        # How F_k is called and whether its call site names it.
+        incoming = (BY_PCALL, True)     # F_0 is called by pcall in D().
         pending = None              # (defline, resolvable) of a tail run.
         n = len(ch.transitions)
         for k in range(n + 1):
@@ -149,10 +195,10 @@ class Program(object):
                              .format(pre))
                 e('end')
                 if pending and pending[1]:
-                    model.append(('H', pending[0]))
-                model.append(('L', d, line))
-                model.append(('B', 'lbox_session_exists'
-                              if ch.target == 'c' else 'ffi.meta.__call'))
+                    put(('H', pending[0]))
+                put(('L', d, line), incoming[0])
+                put(('B', 'lbox_session_exists' if ch.target == 'c'
+                     else 'ffi.meta.__call'), BY_LUA)
                 break
             t = ch.transitions[k]
             d = e('function _G.{}(x)'.format(F))
@@ -162,8 +208,12 @@ class Program(object):
                 if pending is None:
                     pending = (d, incoming[1])
                 continue
+            # Tokens after F_k's own, with how each was called; ('NEW',
+            # co) starts another lua_State.
             extra = []
-            nxt = ('L', True)
+            nxt = (BY_LUA, True)
+            if t == 'jit':
+                st['jit'] = True
             if t == 'call':
                 s = e('  local r = {}(x)'.format(N))
                 e('  return r')
@@ -174,19 +224,20 @@ class Program(object):
                     s = e('  local ok, r = xpcall({}, debug.traceback, x)'
                           .format(N))
                 e('  return r')
-                extra = [('B', t)]
-                nxt = ('PP', True)
+                extra = [(('B', t), BY_LUA)]
+                nxt = (BY_PCALL, True)
             elif t in ('resume', 'wrap'):
                 if t == 'resume':
                     e('  local co = coroutine.create({})'.format(N))
                     s = e('  local ok, r = coroutine.resume(co, x)')
-                    extra = [('B', 'coroutine.resume')]
+                    extra = [(('B', 'coroutine.resume'), BY_LUA)]
                 else:
                     e('  local w = coroutine.wrap({})'.format(N))
                     s = e('  local r = w(x)')
-                    extra = [('B', 'coroutine.wrap_aux')]
+                    extra = [(('B', 'coroutine.wrap_aux'), BY_LUA)]
                 e('  return r')
-                nxt = ('CP', False)
+                extra.append((('NEW', True), None))
+                nxt = (BY_RESUME, False)
             elif t in ('sort', 'gsub'):
                 e('  local r')
                 if t == 'sort':
@@ -195,14 +246,16 @@ class Program(object):
                     e('    return a < b')
                     e('  end')
                     s = e('  table.sort({2, 1}, cmp)')
-                    extra = [('B', 'table.sort'), ('L', dc, sc)]
+                    extra = [(('B', 'table.sort'), BY_LUA),
+                             (('L', dc, sc), BY_C)]
                 else:
                     dc = e('  local function cb(m)')
                     sc = e('    r = {}(x)'.format(N))
                     e('    return m')
                     e('  end')
                     s = e("  string.gsub('a', 'a', cb)")
-                    extra = [('B', 'string.gsub'), ('L', dc, sc)]
+                    extra = [(('B', 'string.gsub'), BY_LUA),
+                             (('L', dc, sc), BY_C)]
                 e('  return r')
             elif t in ('index', 'callmt', 'add'):
                 mm, args, use = {
@@ -218,7 +271,10 @@ class Program(object):
                 e('  local t = setmetatable({{}}, {{{} = mm}})'.format(mm))
                 s = e('  local r = {}'.format(use))
                 e('  return r')
-                extra = [('L', dm, sm)]
+                # __call is a plain call of mm (lj_meta_call), the others
+                # a continuation frame.
+                extra = [(('L', dm, sm),
+                          BY_LUA if t == 'callmt' else BY_META)]
             elif t == 'fiber':
                 e('  local ch = fiber.channel(1)')
                 db = e('  local function body()')
@@ -227,7 +283,8 @@ class Program(object):
                 s = e('  fiber.create(body)')
                 e('  local r = ch:get()')
                 e('  return r')
-                extra = [('RESET',), ('L', db, sb)]
+                extra = [(('RESET',), None), (('NEW', False), None),
+                         (('L', db, sb), BY_CPCALL)]
             elif t == 'jit' and ch.hot:
                 # Rounds of the hot loop until it runs in a trace (at most
                 # 30, 3000 iterations: a hot counter up to 6000); then its
@@ -266,8 +323,11 @@ class Program(object):
                 e('  end')
                 s = e('  local ok, r = xpcall(thrower, handler)')
                 e('  return r')
-                extra = [('B', 'xpcall'), ('L', dt, dt), ('B', 'error'),
-                         ('L', dh, sh)]
+                # lj_err_run calls the handler with lj_vm_call.
+                extra = [(('B', 'xpcall'), BY_LUA),
+                         (('L', dt, dt), BY_PCALL),
+                         (('B', 'error'), BY_LUA),
+                         (('L', dh, sh), BY_C)]
             elif t == 'qsort':
                 # A Lua function as an FFI callback (lj_ccallback.c): libc
                 # qsort calls it back, its frame is a CONT one with
@@ -283,17 +343,23 @@ class Program(object):
                 s = e('  C.qsort(arr, 2, 4, cb)')
                 e('  cb:free()')
                 e('  return r')
-                extra = [('B', 'ffi.meta.__call'), ('L', dc, sc)]
+                extra = [(('B', 'ffi.meta.__call'), BY_LUA),
+                         (('L', dc, sc), BY_FFI_CALLBACK)]
             else:
                 raise ValueError(t)
             e('end')
             if pending and pending[1]:
-                model.append(('H', pending[0]))
+                put(('H', pending[0]))
             pending = None
-            model.append(('L', d, s))
-            model.extend(extra)
+            put(('L', d, s), incoming[0])
+            for tok, by in extra:
+                if tok[0] == 'NEW':
+                    new_state(tok[1])
+                else:
+                    put(tok, by)
             incoming = nxt
         ch.model = model
+        ch.attrs = attrs
 
 
 def tokens(entries):

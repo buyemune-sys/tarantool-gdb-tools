@@ -2,7 +2,8 @@
 # sysprof in mode D, `handle SIGPROF stop`).  At every stop: no Python
 # exception, the C frames of `bt -no-filters`, and either a consistent
 # picture (the outer Lua frame - a main chunk or a function called from
-# C - found, lj-stack agrees) or a "!!" mark.  Stops breaking that are
+# C - found, lj-stack agrees, every Lua frame of load.lua called as the
+# model of the workload says) or a "!!" mark.  Stops breaking that are
 # kept in violations.jsonl of the (kept) work directory.
 
 import json
@@ -31,15 +32,74 @@ kill
 
 def outer_found(doc):
     '''The oldest Lua frame of the stopped C stack is where Lua was
-    entered from C: a function called by lua_call/lua_pcall or a main
-    chunk.'''
+    entered from C: a function (a main chunk too) called by lua_call or
+    lua_pcall, or the body of a coroutine.'''
     es = [e for e in C.entries(doc) if e['kind'] == 'lua']
     if not es:
         return True             # No Lua on this stack.
-    last = es[-1]
-    how = ' '.join(last.get('how') or [])
-    return 'called from C' in how or last.get('defline') == 0 or \
-        last.get('ftype') in ('C', 'CP')
+    how = ' '.join(es[-1].get('how') or [])
+    return 'called from C' in how or 'coroutine body' in how
+
+
+LOAD = os.path.join(C.LUA, 'load.lua')
+
+# How the functions of load.lua are called, by a text of their first
+# line: (ftype, how) of lj-bt.  The main chunk by lua_pcall (luaT_call),
+# a fiber body by lua_pcall, an iproto call by lua_call (execute_lua_call),
+# the on_replace trigger by lua_pcall (func_adapter_lua_call), __serialize
+# by lua_pcall (encode_lua_call of the json encoder), the comparator by
+# lua_call of table.sort, the step functions from the loop.
+LOAD_CALLED = [
+    ('function _G.handle', ('C', ['called from C: lua_call'])),
+    ('s:on_replace(function', ('CP', ['called from C: lua_pcall/cpcall'])),
+    ('local function loop', ('L', [])),
+    ('fiber.create(function', ('CP', ['called from C: lua_pcall/cpcall'])),
+    ("loop('netbox'", ('L', [])),
+    ("loop('trigger'", ('L', [])),
+    ('__serialize = function', ('CP', ['called from C: lua_pcall/cpcall'])),
+    ("loop('json'", ('L', [])),
+    ("loop('sort'", ('L', [])),
+    ('table.sort(t, function', ('C', ['called from C: lua_call'])),
+    ("loop('errors'", ('L', [])),
+]
+
+
+def load_model():
+    '''{defline: (ftype, how)} of the functions of load.lua.'''
+    with open(LOAD) as fh:
+        src = fh.read().splitlines()
+    model = {0: ('CP', ['called from C: lua_pcall/cpcall'])}
+    for text, called in LOAD_CALLED:
+        model[next(i + 1 for i, s in enumerate(src) if text in s)] = called
+    nfunc = sum(s.count('function') for s in src
+                if not s.lstrip().startswith('--'))
+    assert len(model) == nfunc + 1, 'load.lua has functions not in the model'
+    return model
+
+
+LOAD_MODEL = load_model()
+
+
+def frame_problems(doc):
+    '''Every Lua frame of a clean stop (no "!!"; inlined frames and the
+    snapshot base frame of a trace aside) against the model of the
+    workload: a function of load.lua, called as LOAD_MODEL says, or of a
+    builtin module of Tarantool.'''
+    probs = []
+    for e in C.entries(doc):
+        if e['kind'] != 'lua' or e.get('fkind') != 'lua' or \
+                e.get('inlined') or 'snapshot' in (e.get('note') or ''):
+            continue
+        if e.get('chunk') == LOAD:
+            want = LOAD_MODEL.get(e.get('defline'))
+            got = (e.get('ftype'), e.get('how'))
+            if want != got:
+                probs.append('{}: called as {}, the model says {}'.format(
+                    e['text'], got, want))
+        elif not (e.get('chunk') or '').startswith('builtin/'):
+            probs.append('{}: chunk {!r} is neither load.lua nor a '
+                         'builtin module'.format(e['text'], e.get('chunk')))
+    return probs
 
 
 def violations(rec):
@@ -51,11 +111,14 @@ def violations(rec):
     if m:
         probs.append('C frames: ' + m)
     # A mark excuses what it marks, an inconsistent Lua stack: the outer
-    # frame may be out of reach.  The rest holds on any stack: each frame
-    # link once, synthetic frames after traces, the frames of the states
-    # lj-bt calls consistent (check_doc skips the broken ones).
-    if not C.warnings(doc) and not outer_found(doc):
-        probs.append('outer Lua frame not found, no "!!"')
+    # frame may be out of reach, a frame be read from a stale link.  The
+    # rest holds on any stack: each frame link once, synthetic frames
+    # after traces, the frames of the states lj-bt calls consistent
+    # (check_doc skips the broken ones).
+    if not C.warnings(doc):
+        if not outer_found(doc):
+            probs.append('outer Lua frame not found, no "!!"')
+        probs += frame_problems(doc)
     probs += [p for p in C.check_doc(rec, allow_warnings=True)
               if not p.startswith('C frames')]
     return probs
