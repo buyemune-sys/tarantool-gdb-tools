@@ -36,6 +36,24 @@ FIXED = [
     # a trace (odd seqs get the FFI target).
     ['jit', 'call', 'call'],
     ['jit', 'pcall'],
+    # 21..: a vararg frame (22, 27: tail-called), the reader of load()
+    # under the parser's cpcall, chunks of loadstring ("=name" and a
+    # string), the tail runs a hop starts itself (through an upvalue, a
+    # field, a local, ITERC, __call, a reassigned global), line info of 32
+    # and 16 bits, a recursion DEPTH deep.
+    ['vararg', 'call'],
+    ['tail', 'vararg', 'call'],
+    ['load', 'call'],
+    ['chunk', 'chunk'],
+    ['tailup', 'call'],
+    ['tailfield', 'tail', 'call'],
+    ['taillocal', 'vararg'],
+    ['tailiter', 'call'],
+    ['tailmt', 'call'],
+    ['tailre', 'call'],
+    ['long', 'long', 'call'],
+    ['deep', 'call'],
+    ['call', 'resume', 'load', 'vararg', 'chunk', 'tailiter'],
 ]
 
 # Of the jit chains with an FFI target, at least this many must stop in

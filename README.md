@@ -128,7 +128,7 @@ The last example leaves frames out (the gaps in the numbers); every line shown i
 - Lua tail calls are recovered by the heuristic above only; a tail call into C shows as a missing C frame.
 - gdb's inline frames of `-O2` C code are printed as `[inlined]` and not otherwise examined.
 - `tarantool_L` is shared by several fibers whose cframes lie on different C stacks; without `tarantool-gdb.py` such frames are marked, not attributed to a fiber.
-- Not tried: hooks, `lua_cpcall` without a frame (FFI callbacks and the error handler of `xpcall` are steps of the test generator).
+- Not tried: hooks (the parser of `load()` under `lj_vm_cpcall` without a frame, FFI callbacks and the error handler of `xpcall` are steps of the test generator).
 
 ### Machine-readable output
 
@@ -140,8 +140,8 @@ The last example leaves frames out (the gaps in the numbers); every line shown i
 
 | Group | What |
 |---|---|
-| `oracle` | fixed chains: the Lua frames must match what the scenario recorded with `debug.getinfo` right before the call, the C frames must match `bt -no-filters`, every frame link appears once, and there is no `!!` |
-| `random` | chains generated from a seed out of 15 kinds of steps (call, tail call, pcall, xpcall, coroutine resume and wrap, `table.sort` comparator, `gsub` callback, `__index`, `__call`, `__add`, another fiber, a hot loop under JIT, an error with an `xpcall` handler, an FFI callback from `qsort`), checked against the generator's model: the frames and lines, how each frame was called, its chunk, its `lua_State` and VM entry |
+| `oracle` | fixed chains, one or more per kind of step of `random`: the Lua frames must match what the scenario recorded with `debug.getinfo` right before the call (lines and chunk names), the C frames must match `bt -no-filters`, every frame link appears once, and there is no `!!` |
+| `random` | chains generated from a seed out of 26 kinds of steps (call, tail call, pcall, xpcall, coroutine resume and wrap, `table.sort` comparator, `gsub` callback, `__index`, `__call`, `__add`, another fiber, a hot loop under JIT, an error with an `xpcall` handler, an FFI callback from `qsort`, a vararg function, the reader of `load()` under the parser, a function of a `loadstring` chunk, tail calls whose head is called through an upvalue, a field, a local, a for-in iterator, `__call` or a reassigned global, a function of 300 or 70000 lines, a recursion up to 5000 deep), checked against the generator's model: the frames and lines, how each frame was called, its chunk, its `lua_State` and VM entry |
 | `stops` | stops at random points of the VM - `SIGPROF` of sysprof in mode D, which walks no stack - on a mixed load: no Python error, the C frames kept, the outer frames found, the frames of the load called as its model says, every mismatch marked |
 | `core` | the same chains on `gcore` files, with no live process: the output matches the live one, and a plain `bt` as the first command shows the same Lua frames (one chain stops in a JIT trace); at that stop on the live process, also `bt` after `thread N` and back |
 | `tail` | the table of the tail call heuristic, positive and negative cases |

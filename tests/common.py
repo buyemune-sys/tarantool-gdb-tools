@@ -13,6 +13,7 @@
 #   LJBT_VERBOSE     print gdb commands and output
 #   TMPDIR           where work directories go (tempfile)
 
+import collections
 import json
 import os
 import re
@@ -278,7 +279,7 @@ def check_doc(rec, allow_warnings=False):
         if w:
             probs.append('"!!" on a consistent stack: ' + '; '.join(w))
     links = [e['link'] for e in entries(doc) + doc['tail'] if e.get('link')]
-    dups = set(x for x in links if links.count(x) > 1)
+    dups = set(x for x, n in collections.Counter(links).items() if n > 1)
     if dups:
         probs.append('Lua frames shown twice: {}'.format(sorted(dups)))
     for s in doc['states']:
@@ -390,9 +391,13 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
             probs += attrs_problems(ch, [e for e in model_entries(doc)
                                          if not from_snapshot(e)], doc)
         builtins = set(t[1] for t in ch.model if t[0] == 'B')
+
+        def of_chain(e):
+            if e.get('chunk') == ch.path:
+                return e.get('defline') in ch.deflines
+            return (e.get('chunk'), e.get('defline')) in ch.loaded
         strange = [e['text'] for e in inl
-                   if (e.get('fkind') == 'lua' and
-                       e.get('defline') not in ch.deflines) or
+                   if (e.get('fkind') == 'lua' and not of_chain(e)) or
                    (e.get('fkind') in ('c', 'ff') and
                     e.get('func') not in builtins) or e.get('fkind') is None]
         if strange:
