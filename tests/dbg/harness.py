@@ -64,14 +64,17 @@ if not TARANTOOL:
 
 PY_ERROR = 'Error occurred in Python'
 
-# gdb 15 (ubuntu-24.04 runners, CI run 45141719368) cannot size the
-# XSAVE area gcore wrote on that CPU and warns when a command reads the
-# registers of a thread on the core; the general registers the tests
-# use are read fine, gdb 17 does not warn.  Taken out of core outputs,
-# reported once on stderr so that a run still shows it.
+# gdb cannot size the XSAVE area gcore wrote on the runner's CPU and
+# warns when a command reads the registers of a thread on the core:
+# gdb 15 (ubuntu-24.04, CI run 45141719368) "Unexpected size of section
+# `.reg-xstate/N' in core file.", gdb 17 (ubuntu-26.04, CI run
+# 45154577020) "Section `.reg-xstate/N' in core file too small.".  The
+# general registers the tests use are read fine.  Taken out of core
+# outputs, reported once on stderr so that a run still shows it.
 CORE_WARNING = re.compile(
-    r"^warning: Unexpected size of section `\.reg-xstate/\d+' in core "
-    r"file\.\n", re.M)
+    r"^warning: (?:Unexpected size of section `\.reg-xstate/\d+' in core "
+    r"file\.|Section `\.reg-xstate/\d+' in core file too small\.)\n",
+    re.M)
 _core_warned = []
 
 
@@ -80,9 +83,9 @@ def strip_core_warnings(out):
     res, n = CORE_WARNING.subn('', out)
     if n and not _core_warned:
         _core_warned.append(n)
-        sys.stderr.write('note: gdb warns "Unexpected size of section '
-                         '.reg-xstate" on the core; ignored in the '
-                         'comparisons (see CORE_WARNING)\n')
+        sys.stderr.write('note: gdb warns about the size of .reg-xstate '
+                         'on the core; ignored in the comparisons (see '
+                         'CORE_WARNING)\n')
     return res
 
 
