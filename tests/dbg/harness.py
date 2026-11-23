@@ -59,16 +59,29 @@ def lua_eval(code, timeout=60):
 
 def tvalue_bits(lua_value, timeout=60):
     '''The 64 bits of the TValue of a Lua value, the argument of print()
-    at the stop in lj_cf_print, as gdb reads them from memory.'''
-    p = subprocess.run([GDB, '-batch', '-nx', '-ex', 'set startup-with-shell off',
-                        '-ex', 'break lj_cf_print',
-                        '-ex', 'run', '-ex', 'output/x *(unsigned long long *)L->base',
-                        '-ex', 'echo \\n', '-ex', 'kill',
-                        '--args', TARANTOOL, '-e',
-                        'print({}) os.exit(0)'.format(lua_value)],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       stdin=subprocess.DEVNULL, universal_newlines=True,
-                       timeout=timeout)
+    at the stop in lj_cf_print, as gdb reads them from memory.
+
+    The Lua code goes in a script file, not in `-e CODE`: with
+    startup-with-shell off, gdb before 16 splits the --args on blanks
+    and keeps the shell quoting it added (tarantool got the arguments
+    `print(42)` and `os.exit\\(0\\)`).'''
+    wd = tempfile.mkdtemp(prefix='dbg-tvalue-')
+    script = os.path.join(wd, 'tvalue.lua')
+    with open(script, 'w') as f:
+        f.write('print({})\nos.exit(0)\n'.format(lua_value))
+    try:
+        p = subprocess.run([GDB, '-batch', '-nx',
+                            '-ex', 'set startup-with-shell off',
+                            '-ex', 'break lj_cf_print',
+                            '-ex', 'run',
+                            '-ex', 'output/x *(unsigned long long *)L->base',
+                            '-ex', 'echo \\n', '-ex', 'kill',
+                            '--args', TARANTOOL, script],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           stdin=subprocess.DEVNULL, universal_newlines=True,
+                           timeout=timeout)
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
     lines = [s for s in p.stdout.split('\n') if s.startswith('0x')]
     if not lines:
         raise RuntimeError('no TValue of {}: {}'.format(lua_value,

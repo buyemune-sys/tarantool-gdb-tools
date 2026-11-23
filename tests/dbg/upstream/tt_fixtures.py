@@ -47,13 +47,20 @@ def tarantool_gdb(tarantool_bin, tarantool_gdb_ext):
 
 
 def gcore_crash(tarantool_bin, work_dir):
-    '''Run the crash under gdb, write a core at the signal.'''
+    '''Run the crash under gdb, write a core at the signal.
+
+    The crash goes in a script file, not in `-e CRASH`: with
+    startup-with-shell off, gdb before 16 splits the --args on blanks
+    and keeps the shell quoting it added.'''
     core = os.path.join(str(work_dir), 'core')
+    script = os.path.join(str(work_dir), 'crash.lua')
+    with open(script, 'w') as f:
+        f.write(CRASH + '\n')
     p = subprocess.run([GDB, '-batch', '-nx',
                         '-ex', 'set startup-with-shell off',
                         '-ex', 'run',
                         '-ex', 'gcore ' + core,
-                        '--args', tarantool_bin, '-e', CRASH],
+                        '--args', tarantool_bin, script],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        stdin=subprocess.DEVNULL, universal_newlines=True,
                        cwd=str(work_dir), timeout=120)
