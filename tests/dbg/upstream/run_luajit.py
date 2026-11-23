@@ -39,13 +39,24 @@ HOOK = ('every trace of tarantool starts with its own XLOAD/BAND/EQ check, '
         'the IR is not the one of plain LuaJIT')
 EARLY_GC = ('before 3.7 the first GC cycle runs at startup before '
             'tarantool_L is set: no Lua state to show')
-# CI run 45128549373: at the stop after `n` in lj_cf_dofile, gdb says
-# "value has been optimized out" for fname; 3.0.2, 3.1.2, 3.4.2 and 3.7+
-# arm64 builds keep it.
+# CI runs 45128549373 (3.2, 3.3, 3.5, 3.6) and 45141719368 (3.0, 3.1,
+# 3.4): at the stop after `n` in lj_cf_dofile, gdb says "value has been
+# optimized out" for fname in every arm64 build before 3.7; 3.7+ keep it.
 OPTIMIZED_OUT = ('the arm64 build of {} has no location for fname of '
                  'lj_cf_dofile at the stop of the test: "value has been '
                  'optimized out"')
-NO_FNAME_ARM64 = [(3, 2), (3, 3), (3, 5), (3, 6)]
+NO_FNAME_ARM64 = [(3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6)]
+
+# The upstream file takes LJ_DUALNUM from ffi.abi('dualnum'), an option
+# the LuaJIT of 3.0, 3.1 and 3.4 does not know (lib_ffi.c of their
+# submodule commits), so it says false; their arm64 builds are
+# dual-number (CI run 45141719368: lj-arch says LJ_DUALNUM: True, lj-func
+# "; integer 42").  The value of harness.dual_number_mode(), read from a
+# TValue, replaces that expression before the file runs.
+UPSTREAM_DUALNUM = ('IS_DUALNUM = execute_process([\n'
+                    '    LUAJIT_BINARY, \'-e\', '
+                    '"print(require(\'ffi\').abi(\'dualnum\'))"\n'
+                    ']).strip() == \'true\'\n')
 
 
 def tarantool_skips(version, arch):
@@ -91,6 +102,28 @@ def red_zone_any_value(mod):
         cls.pattern = cls.pattern.replace(nil, r' VALUE: .+\n?)*', 1)
 
 
+def dual_number_mode():
+    '''LJ_DUALNUM of LJBT_TARANTOOL, as tests/dbg/harness.py reads it.'''
+    sys.path.insert(0, os.path.dirname(HERE))
+    import harness
+    return harness.IS_DUALNUM
+
+
+def exec_upstream(mod, is_dualnum):
+    '''Run the upstream file in mod with IS_DUALNUM = is_dualnum, so
+    that RX_INT, RX_ISDUALNUM and the IR numbers derived from it follow
+    the build (see UPSTREAM_DUALNUM).'''
+    with open(UPSTREAM) as fh:
+        src = fh.read()
+    if src.count(UPSTREAM_DUALNUM) != 1:
+        raise RuntimeError('the IS_DUALNUM line of the upstream file '
+                           'changed, review UPSTREAM_DUALNUM')
+    src = src.replace(UPSTREAM_DUALNUM, 'IS_DUALNUM = {!r}\n'.format(
+        bool(is_dualnum)))
+    mod.__file__ = UPSTREAM
+    exec(compile(src, UPSTREAM, 'exec'), mod.__dict__)
+
+
 def tarantool_info(tarantool):
     '''((major, minor, patch), jit.arch) of the binary.'''
     out = subprocess.run([tarantool, '-e',
@@ -119,7 +152,7 @@ def main():
         spec = importlib.util.spec_from_file_location('debug_extension_tests',
                                                       UPSTREAM)
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        exec_upstream(mod, dual_number_mode())
         run = mod.execute_process
         mod.execute_process = lambda cmd, timeout=timeout: run(cmd, timeout)
         with open(ext) as fh:
