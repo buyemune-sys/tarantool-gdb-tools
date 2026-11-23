@@ -6,6 +6,7 @@ gdb extensions for debugging Tarantool and its LuaJIT, live and on core dumps, o
 |---|---|
 | `lj_bt.py` | `lj-bt`: one stitched C + Lua backtrace, and the same for plain `bt` |
 | `luajit_dbg.py` | LuaJIT's extension (`lj-stack`, `lj-tv`, ...), one file for every Tarantool 3.x, see [below](#luajit_dbgpy) |
+| `tarantool-gdb.py` | Tarantool's extension (`info tt-fibers`, `tt-fiber`, `tt-mp`, `tt-list`, ...), one file for every Tarantool 3.x, see [below](#tarantool-gdbpy) |
 | `examples/` | scenarios and gdb scripts to try the tools on |
 | `tests/` | automated tests, run against a Tarantool build with DWARF |
 
@@ -215,13 +216,15 @@ LuaJIT's gdb (and lldb) extension in one version for every Tarantool 3.x, from 3
 
 ### Tests
 
-`tests/dbg/run.sh [GROUP...]` runs the tests of `luajit_dbg.py` against a Tarantool build with DWARF:
+`tests/dbg/run.sh [GROUP...]` runs the tests of `luajit_dbg.py` and `tarantool-gdb.py` against a Tarantool build with DWARF:
 
 | Group | What |
 |---|---|
 | `luajit` | every command, live and on the `gcore` file of the same stop; the outputs must match and agree with an oracle: `debug.getinfo` for functions and frames, `jit.bc` for the bytecode, `jit.dump` for the IR, registers and snapshots of a trace, `collectgarbage('count')` for `lj-gctop`, gdb expressions for addresses, sizes and GC fields (default) |
 | `upstream` | LuaJIT's own debugger tests, vendored unchanged in `tests/dbg/upstream/` (see its README), run against tarantool; what cannot pass there is skipped with the reason |
-| `all` | both |
+| `tarantool` | `tarantool-gdb.py`: every command and printer, live and on a core, see [below](#tarantool-gdbpy) |
+| `upstream-tarantool` | Tarantool's own tests of the extension, vendored unchanged (see `tests/dbg/upstream/README.md`), with pytest |
+| `all` | all four |
 
 ```
 export $(tests/fetch.sh 3.9.0 amd64 ~/tarantool-3.9.0)
@@ -229,10 +232,46 @@ tests/dbg/run.sh all
 DBG_LUAJIT_DBG=$LJBT_LUAJIT_DBG tests/dbg/run.sh upstream     # the extension of the release
 ```
 
-`DBG_LUAJIT_DBG` points the tests at another extension, to see a test of a fix fail before it. `DBG_KEEP=1` keeps the work directories in `TMPDIR` (the plan, the result and the gdb log of every run). No scenario calls `box.cfg` or listens on a port.
+`DBG_LUAJIT_DBG` points the tests at another extension, to see a test of a fix fail before it. `DBG_KEEP=1` keeps the work directories in `TMPDIR` (the plan, the result and the gdb log of every run). No scenario of `luajit_dbg.py` calls `box.cfg` or listens on a port.
 
-`.github/workflows/dbg.yml` runs both groups for 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2 and 3.9.0 on amd64 and arm64 (arm64 `continue-on-error` for now), and the upstream tests once more with the extension of the release, for the step summary.
+`.github/workflows/dbg.yml` runs the four groups for 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2 and 3.9.0 on amd64 and arm64 (arm64 `continue-on-error` for now), and the upstream tests once more with the extensions of the release, for the step summary.
+
+## tarantool-gdb.py
+
+Tarantool's gdb extension in one version for every Tarantool 3.x, from 3.0.2 to 3.9.0, instead of `tools/tarantool-gdb.py` of each release. It is that file of tarantool/tarantool at Mikhail Elhimov's PR #13078 (master and his fixes: `gdb.printing` for gdb 7.6, the architecture for gdb 8, a fiber switch without libthread_db), with his MsgPack refactor of PR #9665 on top (`tt-mp` prints through the pretty-printers, any `print` option and string literals work; the tuple printer shows the tuple's data, which replaces `tt-tuple`), and these changes, each a commit of its own:
+
+- the fiber switch: the unwinder tells a thread by its ptid (gdb aborted on `thread N` after `info tt-fibers` on a core) and gives the saved context of the selected fiber to frame level 0 only (the selection did not survive a flush of the frame cache); what `lj_bt.py` uses stays: `fiber()`, `Cord().fibers()`, `FiberUnwinder.instance().fiber()`, `set_fiber()`, `reset_fiber()`;
+- thread-local variables gdb cannot read (a core with no libthread_db; gdb 16+ reads the main thread's only) are read at their offset from the thread pointer: `$tl_var_find_offset` reads the TLS itself (gdb's memory search gives wrong addresses past unreadable memory, and crashed on cores), takes the match closest to the thread pointer, looks as far as the TLS segment goes (`cord_ptr` is 197 KiB away in 3.7 and 3.8), above `$tpidr` on AArch64, and prints no debug lines; `$tl_var_addr` works;
+- since 3.7 `tuple_formats` is thread-local: it is read when a tuple is printed (the file did not load before `run` or `core-file`), from the main thread where the current one has none;
+- the printers of `decimal_t`, `struct tt_uuid` and `struct datetime` print the value (a Python traceback in every release), with the 3-digit units of decNumber; MsgPack decimals have their 76 digits since 3.5;
+- the list table has the lists of the older releases (quorum gain/loss up to 3.5, `all_txs` and the vinyl writers up to 3.3, `memtx_tuple` up to 3.5), only what the build has; the list printers survive an error;
+- an unknown MsgPack extension prints as `ext:<type> of len <n>`; no `[invalid]` after a UUID (any 128 bits are one since 3.2);
+- a printer whose enum, variable or type the debug info lacks is off with a note, the rest loads.
+
+```
+(gdb) source tarantool-gdb.py
+(gdb) info tt-fibers
+(gdb) tt-fiber 105
+(gdb) bt
+(gdb) print *tuple
+(gdb) tt-mp -pretty -- (char *)data
+(gdb) tt-list -fields fid,name -- main_cord.alive
+(gdb) print $tl_var_like(&main_cord)
+```
+
+| Kind | Names |
+|---|---|
+| commands | `info tt-fibers`, `tt-fiber`, `tt-mp`, `tt-list`, `tt-list-walk` |
+| functions | `$tl_var_addr`, `$tl_var_find_offset`, `$tl_var_like`, `$find` |
+| parameters | `print tt-list-entry`, `tl-var-search-range` |
+| pretty-printers | `struct tuple`, `json_token`, `rlist`, `stailq`, `stailq_entry`, `decimal_t`, `struct tt_uuid`, `struct datetime`; MsgPack (`char *`) in `tt-mp` |
+
+### Tests
+
+The group `tarantool` (`tests/dbg/test_tarantool.py`) runs one instance (`box.cfg{}` with no listen, its files in a work directory under `TMPDIR`) that builds a space and a tuple, fibers (a sleeper, one with an open transaction) and MsgPack from tarantool's own encoders, and checks every command and printer live and on the `gcore` file of the same stop against what the Lua side knows (`fiber.info()`, the tuple, `tostring()` of decimals, UUIDs and datetimes, `box.txn_id()`) and what gdb reads on its own (list lengths, TLS addresses): fibers in every thread, the fiber switch and its frames, the list commands and printers, tuples from every thread, all MsgPack types and extensions, the thread-local functions, also with gdb's TLS lookup and with parts of the debug info hidden. A thread whose stack `gcore` could not read (a guard region, Linux 6.13+ with a recent glibc) is left out of the core checks with a note.
+
+The group `upstream-tarantool` runs `test/gdb/` of PR #13078 and `tools/test-tarantool-gdb.py` of PR #9665 unchanged with pytest (`python3-pytest`, or `DBG_PYTHON`), their `conftest.py` replaced by `tests/dbg/upstream/tt_fixtures.py` (the core comes from `gcore`, no `core_pattern` needed). `DBG_TT_GDB=$LJBT_TT_GDB` runs them with the file of the release.
 
 ## License
 
-BSD 2-Clause, see `LICENSE`, except for `luajit_dbg.py` and the vendored tests, which are MIT as LuaJIT: see `NOTICE` for where they come from.
+BSD 2-Clause, see `LICENSE`, except for `luajit_dbg.py` and its vendored tests, which are MIT as LuaJIT, and `tarantool-gdb.py` and its vendored tests, which are BSD 2-Clause of the Tarantool authors: see `NOTICE` for where they come from.

@@ -29,6 +29,64 @@ test/tarantool-debugger-tests/debug-extension-tests.py of
 tarantool/luajit at the same commit c4cf7f36, unchanged.  License: MIT,
 as above.
 
+tarantool-gdb.py
+----------------
+
+The Tarantool debugger extension, from tools/tarantool-gdb.py of
+https://github.com/tarantool/tarantool:
+
+- base: commit fa8bd1760306454649f128e261a37bfa48fc53b8, the head of
+  PR #13078 (branch elhimov/gh-13076-add-fiber-switch-tests by Mikhail
+  Elhimov, three commits on tarantool/master 773e8814);
+- the MsgPack refactor of PR #9665 by Mikhail Elhimov (ce972e10,
+  4f7e2fff), rebased onto it;
+- the changes of this repository on top, listed by `git log
+  tarantool-gdb.py`.
+
+License: BSD 2-Clause, the license of Tarantool (LICENSE of
+tarantool/tarantool), quoted below.
+
+tests/dbg/upstream/tarantool/
+-----------------------------
+
+conftest.py, test_gdb.py, utils.py, ut_tt_fiber.py and ut_tl_var.py:
+test/gdb/ of tarantool/tarantool at fa8bd176 (PR #13078), unchanged;
+test-tarantool-gdb.py: tools/test-tarantool-gdb.py of tarantool/tarantool
+at 4f7e2fff (PR #9665), unchanged.  License: BSD 2-Clause, as
+tarantool-gdb.py.
+
+The Tarantool license
+---------------------
+
+Copyright 2010-2020 Tarantool AUTHORS: please see AUTHORS file.
+
+Redistribution and use in source and binary forms, with or
+without modification, are permitted provided that the following
+conditions are met:
+
+1. Redistributions of source code must retain the above
+   copyright notice, this list of conditions and the
+   following disclaimer.
+
+2. Redistributions in binary form must reproduce the above
+   copyright notice, this list of conditions and the following
+   disclaimer in the documentation and/or other materials
+   provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY AUTHORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+AUTHORS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
+THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+
 The LuaJIT license
 ------------------
 
