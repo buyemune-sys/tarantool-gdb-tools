@@ -2,6 +2,10 @@
 GDB extension for Tarantool post-mortem analysis.
 To use, just put 'source <path-to-this-file>' in gdb.
 """
+# The universal one of github.com/buyemune-sys/tarantool-gdb-tools: for
+# every Tarantool 3.x.  From tools/tarantool-gdb.py of tarantool/tarantool,
+# BSD 2-Clause license (Copyright 2010-2020 Tarantool AUTHORS, LICENSE of
+# tarantool/tarantool); see NOTICE of that repository.
 
 import argparse
 import base64
