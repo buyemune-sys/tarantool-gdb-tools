@@ -2108,9 +2108,14 @@ from_tt_list
             self.head = head
             self.reverse = reverse
             self.predicate = predicate
+            # A walk is of one process: the next one (another run, an
+            # attach, another core) has other items, maybe under a list
+            # head at the same address (a non-PIE build).
+            self.pid = gdb.selected_inferior().pid
 
         def __eq__(self, other):
             return other is not None and \
+                self.pid == other.pid and \
                 self.val == other.val and \
                 self.is_item == other.is_item and \
                 self.head == other.head and \

@@ -18,6 +18,7 @@ import unittest
 
 import harness as H
 from harness import DbgCase, Scenario, gcval
+from othercore import OtherCore
 
 ORACLE_TT = os.path.join(H.HERE, 'oracle_tt.py')
 SOURCES = [H.TT_GDB, ORACLE_TT]
@@ -1004,6 +1005,18 @@ class TestMsgPack(DbgCase):
         # The keys are names, not MsgPack (as test-tarantool-gdb.py has).
         self.assertEqual(self.mp('tuple'),
                          '{[format_id] = 5U, [payload] = {1U, "x"}}')
+
+
+class TestOtherCore(DbgCase):
+    '''Every command of BOX on a core after a core of another process
+    (see othercore.py): the printers read their arrays at the address of
+    this process, a tt-list-walk of main_cord.alive starts over (on a
+    static build the list head is at the same address in both).'''
+    OTHER = OtherCore(BOX)
+    SCENARIOS = OTHER.scenarios
+
+    def test_box(self):
+        self.assertEqual(self.OTHER.diffs(), [])
 
 
 if __name__ == '__main__':
