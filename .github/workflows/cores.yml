@@ -1,0 +1,154 @@
+name: cores
+
+# The stacks of the threads in cores of tarantool 3.9.0, on every Ubuntu
+# of GitHub's runners, amd64 and arm64 (tests/dbg/test_cores.py): gcore
+# of gdb before 18.1 loses them where glibc 2.42+ installs the stack
+# guard with madvise(MADV_GUARD_INSTALL) on Linux 6.13+ (gdb bug 33855);
+# gcore-pages (gcore_pages.py) and the kernel's core keep them.  Each
+# runner has its own gdb (12, 15, 17), so the job also runs the groups of
+# tests/dbg with core modes and the lj-bt core layer with it.  The table
+# job puts the results of all runners in one table.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '13 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cores:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # New: before this job the tests ran only with the gdb 15 of
+    # ubuntu-24.04; the gdb 12 of 22.04, the gdb 17 and glibc 2.43 of
+    # 26.04 and the 22.04 and 26.04 arm64 images never ran them.  Report,
+    # do not fail the workflow, until each runner is green.
+    continue-on-error: true
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04,
+             ubuntu-22.04-arm, ubuntu-24.04-arm, ubuntu-26.04-arm]
+    env:
+      VERSION: 3.9.0
+      ARCH: ${{ endsWith(matrix.os, '-arm') && 'arm64' || 'amd64' }}
+      DBG_KEEP: 1
+      # The same download as test.yml and dbg.yml: the cache is shared.
+      DL: ${{ github.workspace }}/.ljbt-dl/3.9.0-${{ endsWith(matrix.os, '-arm') && 'arm64' || 'amd64' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gdb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+          gdb --version | head -1
+
+      - name: Cache the Tarantool build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DL }}
+          key: tarantool-${{ env.VERSION }}-${{ env.ARCH }}-v1
+
+      - name: Fetch Tarantool ${{ env.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tests/fetch.sh "$VERSION" "$ARCH" "$DL" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}/cores" >> "$GITHUB_ENV"
+          mkdir -p "${{ runner.temp }}/cores"
+
+      # The runners pipe cores to a program (apport, systemd-coredump):
+      # a plain file in the working directory of the process instead.
+      # test_cores.py raises the soft RLIMIT_CORE to the hard one.
+      - name: Let the kernel write cores to files
+        run: |
+          echo "core_pattern was: $(cat /proc/sys/kernel/core_pattern)"
+          sudo sysctl -w kernel.core_pattern=core.%p
+          echo "RLIMIT_CORE: soft $(ulimit -Sc), hard $(ulimit -Hc)"
+          uname -r
+          ldd --version | head -1
+
+      - name: Thread stacks in cores
+        run: |
+          DBG_CORES_SUMMARY="$TMPDIR/cores.json" tests/dbg/run.sh cores 2>&1 | tee "$TMPDIR/run-cores.log"
+          exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      # The directory name labels the row with the runner.
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ ! -f "$TMPDIR/cores.json" ]; then
+            echo "::warning::no summary: test_cores.py did not get that far"
+            exit 0
+          fi
+          mkdir -p "$TMPDIR/cores-${{ matrix.os }}"
+          cp "$TMPDIR/cores.json" "$TMPDIR/cores-${{ matrix.os }}/"
+          {
+            echo "### Thread stacks in cores, ${{ matrix.os }}"
+            echo
+            python3 tests/dbg/cores_table.py "$TMPDIR/cores-${{ matrix.os }}/cores.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the summary
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cores-${{ matrix.os }}
+          path: ${{ runner.temp }}/cores/cores-${{ matrix.os }}/cores.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # The cores of these groups are written with gcore-pages: the
+      # thread checks of tarantool hold on every runner.
+      - name: luajit_dbg.py and tarantool-gdb.py tests with gdb of ${{ matrix.os }}
+        if: ${{ !cancelled() }}
+        run: |
+          tests/dbg/run.sh luajit tarantool 2>&1 | tee "$TMPDIR/run-dbg.log"
+          exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: lj-bt core layer with gdb of ${{ matrix.os }}
+        if: ${{ !cancelled() }}
+        run: |
+          tests/run.sh core 2>&1 | tee "$TMPDIR/run-ljbt-core.log"
+          exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cores-logs-${{ matrix.os }}
+          # The plans, results and gdb logs of every run; the cores are
+          # removed (DBG_KEEP is not "cores").
+          path: ${{ runner.temp }}/cores
+          retention-days: 14
+
+  table:
+    name: table
+    needs: cores
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cores-ubuntu-*
+          path: cores
+
+      - name: Table
+        run: |
+          {
+            echo "### Thread stacks in cores of tarantool $VERSION"
+            echo
+            python3 tests/dbg/cores_table.py cores/cores-*/cores.json
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERSION: 3.9.0

@@ -290,7 +290,7 @@ Thread 4 (LWP 232073):
 
 Why: since glibc 2.42 (commit a6fbe36b7f) `pthread_create` installs the guard page of a thread stack with `madvise(MADV_GUARD_INSTALL)` (Linux 6.13+) inside the stack mapping, at its start, instead of a `PROT_NONE` mapping of its own; several stacks often merge into one mapping. A read of a guard page fails (`EIO` from `/proc/PID/mem`). `gcore` before gdb 18.1 copies each mapping in reads of 1 MiB and gives up on the rest of the mapping at the first read that fails, so the stacks, with the TLS and `struct pthread` at their top, are zeroes in the core. This is gdb [bug 33855](https://sourceware.org/bugzilla/show_bug.cgi?id=33855), fixed in gdb 18.1 (commit c1da013915 retries such a read page by page).
 
-Who has it: glibc 2.42+ on Linux 6.13+ with a gdb before 18.1 (all three). Seen on Ubuntu 26.04 (glibc 2.43, Linux 7.0, gdb 17.1); Ubuntu 25.10 (glibc 2.42, gdb 16.3) and 26.10 (glibc 2.44, gdb 17.2) ship the same mix. Not on Ubuntu 24.04 (glibc 2.39, even on Linux 7.0) or 22.04, nor with gdb 18.1+. The kernel's own core (a crash, or `kill -QUIT` with `ulimit -c` and a file `core_pattern`) keeps the stacks: it leaves out the guard pages only.
+Who has it: glibc 2.42+ on Linux 6.13+ with a gdb before 18.1 (all three). Seen on Ubuntu 26.04 (glibc 2.43, Linux 7.0, gdb 17.1); Ubuntu 25.10 (glibc 2.42, gdb 16.3) and 26.10 (glibc 2.44, gdb 17.2) ship the same mix. Not on Ubuntu 24.04 (glibc 2.39, even on Linux 7.0) or 22.04, nor with gdb 18.1+. The `cores` workflow checks each Ubuntu runner, see below. The kernel's own core (a crash, or `kill -QUIT` with `ulimit -c` and a file `core_pattern`) keeps the stacks: it leaves out the guard pages only.
 
 What to do, any of:
 
@@ -319,7 +319,9 @@ The group `cores` of `tests/dbg/run.sh` (`tests/dbg/test_cores.py`) runs taranto
 | `test_gcore_pages` | `gcore-pages` keeps every stack, and reads pages again only where `gcore` lost them |
 | `test_kernel_core` | the kernel's core keeps every stack; skipped with the reason where the kernel writes none (`core_pattern` pipes to a program, or the hard `RLIMIT_CORE` is 0) |
 
-`DBG_CORES_SUMMARY=FILE` writes the facts and the results as JSON. `DBG_GDB` runs the tests with another gdb, e.g. one built from source.
+`DBG_CORES_SUMMARY=FILE` writes the facts and the results as JSON; `tests/dbg/cores_table.py` makes a Markdown table of such files. `DBG_GDB` runs the tests with another gdb, e.g. one built from source.
+
+`.github/workflows/cores.yml` runs the group with Tarantool 3.9.0 on `ubuntu-22.04`, `ubuntu-24.04` and `ubuntu-26.04`, amd64 and `-arm`, the kernel's cores enabled with `sysctl kernel.core_pattern=core.%p`, then the groups `luajit` and `tarantool` and the lj-bt `core` layer with the gdb of the runner (12.1, 15.1, 17.1 from the Ubuntu archive). Its `table` job puts a row per runner in the step summary: OS, kernel, glibc, gdb, guard pages in the stacks, whether `gcore`, `gcore-pages` and the kernel's core keep them. The runners are `continue-on-error` until each is green: before this workflow the tests ran with the gdb of `ubuntu-24.04` only.
 
 ## License
 
