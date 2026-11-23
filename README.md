@@ -7,6 +7,7 @@ gdb extensions for debugging Tarantool and its LuaJIT, live and on core dumps, o
 | `lj_bt.py` | `lj-bt`: one stitched C + Lua backtrace, and the same for plain `bt` |
 | `luajit_dbg.py` | LuaJIT's extension (`lj-stack`, `lj-tv`, ...), one file for every Tarantool 3.x, see [below](#luajit_dbgpy) |
 | `tarantool-gdb.py` | Tarantool's extension (`info tt-fibers`, `tt-fiber`, `tt-mp`, `tt-list`, ...), one file for every Tarantool 3.x, see [below](#tarantool-gdbpy) |
+| `gcore_pages.py` | `gcore-pages`: a `gcore` that keeps the stacks of the threads with glibc 2.42+ and gdb before 18.1, see [below](#gcore-and-the-thread-stacks-glibc-242) |
 | `examples/` | scenarios and gdb scripts to try the tools on |
 | `tests/` | automated tests, run against a Tarantool build with DWARF |
 
@@ -233,7 +234,7 @@ tests/dbg/run.sh all
 DBG_LUAJIT_DBG=$LJBT_LUAJIT_DBG tests/dbg/run.sh upstream     # the extension of the release
 ```
 
-`DBG_LUAJIT_DBG` points the tests at another extension, to see a test of a fix fail before it. `DBG_KEEP=1` keeps the work directories in `TMPDIR` (the plan, the result and the gdb log of every run). No scenario of `luajit_dbg.py` calls `box.cfg` or listens on a port.
+`DBG_LUAJIT_DBG` points the tests at another extension, to see a test of a fix fail before it. The cores are written with `gcore-pages`; `DBG_GCORE_PAGES=plain` writes them with gdb's `gcore`, which loses the thread stacks where `gcore-pages` is needed. `DBG_KEEP=1` keeps the work directories in `TMPDIR` (the plan, the result and the gdb log of every run). No scenario of `luajit_dbg.py` calls `box.cfg` or listens on a port.
 
 `.github/workflows/dbg.yml` runs the four groups for 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2 and 3.9.0 on amd64 and arm64 (arm64 `continue-on-error` for now), and the upstream tests once more with the extensions of the release, for the step summary.
 
@@ -269,9 +270,42 @@ Tarantool's gdb extension in one version for every Tarantool 3.x, from 3.0.2 to 
 
 ### Tests
 
-The group `tarantool` (`tests/dbg/test_tarantool.py`) runs one instance (`box.cfg{}` with no listen, its files in a work directory under `TMPDIR`) that builds a space and a tuple, fibers (a sleeper, one with an open transaction) and MsgPack from tarantool's own encoders, and checks every command and printer live and on the `gcore` file of the same stop against what the Lua side knows (`fiber.info()`, the tuple, `tostring()` of decimals, UUIDs and datetimes, `box.txn_id()`) and what gdb reads on its own (list lengths, TLS addresses): fibers in every thread, the fiber switch and its frames, the list commands and printers, tuples from every thread, all MsgPack types and extensions, the thread-local functions, also with gdb's TLS lookup and with parts of the debug info hidden. A thread whose stack `gcore` could not read (a guard region, Linux 6.13+ with a recent glibc) is left out of the core checks with a note.
+The group `tarantool` (`tests/dbg/test_tarantool.py`) runs one instance (`box.cfg{}` with no listen, its files in a work directory under `TMPDIR`) that builds a space and a tuple, fibers (a sleeper, one with an open transaction) and MsgPack from tarantool's own encoders, and checks every command and printer live and on the `gcore` file of the same stop against what the Lua side knows (`fiber.info()`, the tuple, `tostring()` of decimals, UUIDs and datetimes, `box.txn_id()`) and what gdb reads on its own (list lengths, TLS addresses): fibers in every thread, the fiber switch and its frames, the list commands and printers, tuples from every thread, all MsgPack types and extensions, the thread-local functions, also with gdb's TLS lookup and with parts of the debug info hidden. The core is written with `gcore-pages`, and the output of every thread on it must be the live one: with plain `gcore` (`DBG_GCORE_PAGES=plain`) the thread checks fail where glibc 2.42+ meets a gdb before 18.1, see [below](#gcore-and-the-thread-stacks-glibc-242).
 
 The group `upstream-tarantool` runs `test/gdb/` of PR #13078 and `tools/test-tarantool-gdb.py` of PR #9665 unchanged with pytest (`python3-pytest`, or `DBG_PYTHON`), their `conftest.py` replaced by `tests/dbg/upstream/tt_fixtures.py` (the core comes from `gcore`, no `core_pattern` needed). `DBG_TT_GDB=$LJBT_TT_GDB` runs them with the file of the release.
+
+## gcore and the thread stacks (glibc 2.42+)
+
+A core that gdb's `gcore` writes of a running Tarantool can hold the stack of the main thread only. Every other thread (`wal`, `iproto`, `applier_1`, `coio`...) stops after one frame, its thread-local variables read as zeroes, and `gcore` warns once per lost mapping:
+
+```
+warning: Memory read failed for corefile section, 1048576 bytes at 0x7f81343ff000.
+...
+(gdb) thread apply all bt          # on that core
+Thread 4 (LWP 232073):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x0000000000000000 in ?? ()
+```
+
+Why: since glibc 2.42 (commit a6fbe36b7f) `pthread_create` installs the guard page of a thread stack with `madvise(MADV_GUARD_INSTALL)` (Linux 6.13+) inside the stack mapping, at its start, instead of a `PROT_NONE` mapping of its own; several stacks often merge into one mapping. A read of a guard page fails (`EIO` from `/proc/PID/mem`). `gcore` before gdb 18.1 copies each mapping in reads of 1 MiB and gives up on the rest of the mapping at the first read that fails, so the stacks, with the TLS and `struct pthread` at their top, are zeroes in the core. This is gdb [bug 33855](https://sourceware.org/bugzilla/show_bug.cgi?id=33855), fixed in gdb 18.1 (commit c1da013915 retries such a read page by page).
+
+Who has it: glibc 2.42+ on Linux 6.13+ with a gdb before 18.1 (all three). Seen on Ubuntu 26.04 (glibc 2.43, Linux 7.0, gdb 17.1); Ubuntu 25.10 (glibc 2.42, gdb 16.3) and 26.10 (glibc 2.44, gdb 17.2) ship the same mix. Not on Ubuntu 24.04 (glibc 2.39, even on Linux 7.0) or 22.04, nor with gdb 18.1+. The kernel's own core (a crash, or `kill -QUIT` with `ulimit -c` and a file `core_pattern`) keeps the stacks: it leaves out the guard pages only.
+
+What to do, any of:
+
+- `gcore-pages` of `gcore_pages.py` instead of `gcore`; it runs `gcore FILE`, then reads every mapping of the core again as gdb 18.1 does and writes into `FILE` what `gcore` left out (the guard pages stay zeroes). The process is not changed; with gdb 18.1+ it is plain `gcore`. On a Tarantool with a core of 830 MB it took 1.0 s, `gcore` 0.8 s.
+  ```
+  (gdb) source gcore_pages.py
+  (gdb) gcore-pages core.12345
+  Saved corefile core.12345
+  gcore-pages: read again 41963520 bytes of 5 mappings, 6 pages unreadable
+
+  $ gdb -p PID -batch -x gcore_pages.py -ex "gcore-pages core.PID"    # instead of gcore -o core PID
+  ```
+- gdb 18.1 or later;
+- the kernel's core, where the process may die.
+
+What does not help (measured on Ubuntu 26.04): `set use-coredump-filter off`, `set dump-excluded-mappings on`; `GLIBC_TUNABLES`: glibc has no tunable for this guard (it takes a `PROT_NONE` mapping only where the `madvise` fails), and `glibc.mem.decorate_maps=1`, `glibc.pthread.stack_hugetlb=0` or `glibc.pthread.stack_cache_size=0` change nothing.
 
 ## License
 

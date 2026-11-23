@@ -7,6 +7,10 @@
 #                    this repo; point it at an upstream copy to see a
 #                    test of a fix fail before the fix)
 #   DBG_TT_GDB       the tarantool-gdb.py under test (default: this repo)
+#   DBG_GCORE_PAGES  the gcore_pages.py whose gcore-pages writes the
+#                    cores (default: this repo); "plain": gdb's gcore,
+#                    which before gdb 18.1 loses the thread stacks of
+#                    glibc 2.42+ (see gcore_pages.py)
 #   DBG_KEEP         keep the work directories (plans, results, gdb logs);
 #                    DBG_KEEP=cores keeps the core files (~40 MB each) too
 #   DBG_VERBOSE      print plans and results
@@ -39,6 +43,8 @@ LUAJIT_DBG = os.environ.get('DBG_LUAJIT_DBG') or \
     os.path.join(ROOT, 'luajit_dbg.py')
 TT_GDB = os.environ.get('DBG_TT_GDB') or \
     os.path.join(ROOT, 'tarantool-gdb.py')
+GCORE_PAGES = os.environ.get('DBG_GCORE_PAGES') or \
+    os.path.join(ROOT, 'gcore_pages.py')
 KEEP = os.environ.get('DBG_KEEP', '')
 VERBOSE = bool(os.environ.get('DBG_VERBOSE'))
 GDB = os.environ.get('DBG_GDB', 'gdb')
@@ -236,6 +242,7 @@ class Scenario(object):
             'breaks': subst(self.breaks), 'setup': subst(self.setup),
             'prep': subst(self.prep), 'cmds': subst(self.cmds),
             'gcore': None if self.live_only else core,
+            'gcore_pages': None if GCORE_PAGES == 'plain' else GCORE_PAGES,
         }
         res = {'live': self._gdb(wd, plan, 'live'), 'wd': wd}
         if not self.live_only:

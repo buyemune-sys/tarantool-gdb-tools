@@ -12,7 +12,6 @@
 
 import os
 import re
-import sys
 import unittest
 
 import harness as H
@@ -505,26 +504,22 @@ def per_thread(text):
 
 
 def thread_outs(case, scen, key):
-    '''[(mode, {rank: output})] of a dbg-threads command, the core one
-    without the threads whose TLS the core lost: gcore reads a mapping
-    whole, and a thread stack with a guard region (MADV_GUARD_INSTALL,
-    Linux 6.13+ with a recent glibc) cannot be read whole, so it is
-    written as zeroes.  The output of a thread in the core must be the
-    live one.'''
+    '''[(mode, {rank: output})] of a dbg-threads command; the output of
+    every thread in the core must be the live one.  The core must hold
+    the TLS of every thread, at the top of its stack: gcore of gdb before
+    18.1 loses the thread stacks of glibc 2.42+, the harness writes the
+    core with gcore-pages (see test_cores.py).'''
     live = per_thread(case.raw(scen, key, 'live')['out'])
     got = [('live', live)]
     if 'core' in scen.modes():
         core = per_thread(case.raw(scen, key, 'core')['out'])
         tp = dict((m, per_thread(case.raw(scen, 'threads.tp', m)['out']))
                   for m in ('live', 'core'))
-        lost = [r for r in tp['live'] if tp['core'].get(r) != tp['live'][r]]
-        if lost:
-            sys.stderr.write('\n{}: the core has no TLS of threads {} '
-                             '(gcore and guard regions), not checked\n'
-                             .format(key, lost))
-        core = dict((r, s) for r, s in core.items() if r not in lost)
+        case.assertEqual(tp['core'], tp['live'], 'the TLS of the threads '
+                         '(the TCB word) in the core and live')
+        case.assertEqual(sorted(core), sorted(live), key)
         for r, s in core.items():
-            case.assertEqual(s, live.get(r), '{} thread {}: the core output '
+            case.assertEqual(s, live[r], '{} thread {}: the core output '
                              'differs'.format(key, r))
         got.append(('core', core))
     return got

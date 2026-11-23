@@ -15,6 +15,9 @@
 #              value of a gdb expression (an integer if it has one); a
 #              command with a cond runs only if that expression is true
 #   gcore      write a core file there after cmds (live)
+#   gcore_pages
+#              write it with gcore-pages of this gcore_pages.py, which
+#              keeps the thread stacks gcore of gdb < 18.1 loses
 #   out        where the result goes
 #
 # The result (JSON): load, run: output of sourcing and of the run;
@@ -110,7 +113,10 @@ def main():
                                         'skipped': True}
                     continue
             res['cmds'][key] = try_ex(c)
-        if plan.get('gcore'):
+        if plan.get('gcore') and plan.get('gcore_pages'):
+            ex('source ' + plan['gcore_pages'])
+            ex('gcore-pages ' + plan['gcore'])
+        elif plan.get('gcore'):
             ex('gcore ' + plan['gcore'])
     except Exception:
         res['fatal'] = traceback.format_exc()
