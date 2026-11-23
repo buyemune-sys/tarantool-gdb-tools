@@ -53,50 +53,81 @@ It is silent where the callee cannot be resolved (a call result, `__index` funct
 
 ### Examples
 
-A mixed stack: an FFI `get` called from a `table.sort` comparator, through a chain of tail calls.
+Captured on Tarantool 3.9.0 (x86_64, the static deb), from the repository root.
+
+A mixed stack: the memtx `box.space.t:get()` (FFI) at the end of a chain of tail calls, `lj_a -> lj_b -> lj_c` (`tarantool examples/mixed.lua tail on main`, stopped in `box_index_get` after the marker, as `examples/example.gdb` does).
 
 ```
+lj-bt: L=0x7ffff7945378 (G->cur_L), G=0x7ffff79453d8, vmstate=CFUNC
+#0    box_index_get () at box/index.cc:534
+#1    lj_vm_ffi_call () at buildvm_x86.dasc:2867
+#2    lj_ccall_func () at src/lj_ccall.c:1224
 #3    lj_cf_ffi_meta___call () at src/lib_ffi.c:230  <- builtin ffi.meta.__call
-#4    lj_BC_FUNCC ()  [VM entry L=0x40000378 cframe=0x7ffff3080e70, main L]
+#4    lj_BC_FUNCC ()  [VM entry L=0x7ffff7945378 cframe=0x7ffff6480e50, main L]
 #4.1  [lua] builtin/box/schema.lua:2155 in function <builtin/box/schema.lua:2148>
 #4.2  [lua] (tail call from method 'get' = builtin/box/schema.lua:2338)  [heuristic]
-#4.3  [lua] mixed.lua:108 in function <mixed.lua:107>
-#4.4  [lua] (tail call from global 'lj_a' = mixed.lua:112)  [heuristic]
-#4.5  [lua] mixed.lua:115 in function <mixed.lua:114>
-#4.6  [lua] mixed.lua:131 in main chunk
-#5    lua_pcall () at src/lj_api.c:1178
+#4.3  [lua] examples/mixed.lua:110 in function <examples/mixed.lua:109>
+#4.4  [lua] (tail call from global 'lj_a' = examples/mixed.lua:114)  [heuristic]
+#4.5  [lua] examples/mixed.lua:117 in function <examples/mixed.lua:116>
+#4.6  [lua] examples/mixed.lua:133 in main chunk
+#5    lua_pcall () at src/lj_api.c:1142
+#6    luaT_call () at lua/utils.c:755
+#7    lua_main () at lua/init.c:1060
+#8    run_script_f () at lua/init.c:1280
+#9    fiber_cxx_invoke(fiber_func, typedef __va_list_tag __va_list_tag *) () at core/fiber.h:1348
+#10   fiber_loop () at core/fiber.c:1187
+#11   coro_init () at coro/coro.c:108
 ```
 
-A C function called from a JIT trace; plain gdb stops at `??` there.
+A C function called from a JIT trace (`mixed.lua trace on main`, `break box_space_id_by_name if len == 8`).  gdb alone stops at `??` there; with `lj_bt.py` loaded even `bt -no-filters` goes on through the trace's band.
 
 ```
--- L=0x40000378: running a trace: Lua frames from g->jit_base 0x406480e8
-#1    0x555580d127a7 in [trace 175] started at mixed.lua:84  snapshot #6
-#1.1  [lua] mixed.lua:80 in function <mixed.lua:78>  (inlined in trace 175, snapshot #6)
-#2.1  [lua] mixed.lua:85 in function <mixed.lua:73>  (trace 175 base frame, snapshot #6)
+lj-bt: L=0x7ffff7945378 (G->cur_L), G=0x7ffff79453d8, vmstate=TRACE 158
+-- L=0x7ffff7945378: running a trace: Lua frames from g->jit_base 0x7ffff69c4af0
+#0    box_space_id_by_name () at box/box.cc:3753
+#1    0x2195fcfe in [trace 158] started at examples/mixed.lua:86  snapshot #6
+#1.1  [lua] examples/mixed.lua:82 in function <examples/mixed.lua:80>  (inlined in trace 158, snapshot #6)
+#2    lj_BC_JLOOP ()  [VM entry L=0x7ffff7945378 cframe=0x7ffff6480e50, main L]
+#2.1  [lua] examples/mixed.lua:87 in function <examples/mixed.lua:75>  (trace 158 base frame, snapshot #6)
+#2.2  [lua] examples/mixed.lua:133 in main chunk
+#3    lua_pcall () at src/lj_api.c:1142
 ```
 
-The sysprof crash (tarantool/tarantool#11184): a sample taken after an `on_replace` trigger returned to C, while `space:replace` is still running.
+The sysprof crash (tarantool/tarantool#11184), `tests/lua/crash.lua trigger`: the sample is taken while the `on_replace` trigger, called from C under `space:replace` (itself called from a trace), pushes its arguments; sysprof's `top_frame` is stale, far off the top frame of the trigger's fiber.
 
 ```
-!! sysprof walks cur_L from top_frame_info.top_frame-1 = 0x40863348, the top frame is 0x40863330 (+3 slots)
-#9    lj_vm_return ()  [VM entry L=0x404dda70 cframe=0x7fffc93809a0, fiber 118 "lua"]  !! owns no Lua frame: VM entry/exit in progress
-#10   lua_pcall () at src/lj_api.c:1178
-#14   space_run_replace_triggers () at box/space.c:962
-#21   lbox_replace () at lua/index.c:85  <- C function lbox_replace  <called from a trace, stitched (lj_cont_stitch)>
-#22   lj_BC_FUNCC ()  [VM entry L=0x404dda70 cframe=0x7fffc9380ec0, fiber 118 "lua"]
-#22.1 [lua] prodlike.lua:54 in function <prodlike.lua:51>  <called from C: lua_pcall/cpcall>
+lj-bt: L=0x7ffff6e5b7b8 (G->cur_L), G=0x7ffff79453d8, vmstate=CFUNC
+!! sysprof walks cur_L from top_frame_info.top_frame-1 = 0x7ffff79485a8, the top frame is 0x7ffff69fdae8 (+2004312 slots)
+#0    stream_backtrace_lua () at src/lj_sysprof.c:188 [inlined]
+#1    stream_guest () at src/lj_sysprof.c:256
+#4    sysprof_signal_handler () at src/lj_sysprof.c:337
+#5    <signal handler called>
+#6    clearhpart () at src/lj_tab.c:84 [inlined]
+#11   lj_cdata_setfin () at src/lj_cdata.c:98
+#12   luaL_setcdatagc () at lua/utils.c:429
+#13   luaT_pushtuple () at lua/tuple.c:697
+#14   port_c_dump_lua () at lua/misc.cc:303
+#16   func_adapter_lua_call () at lua/func_adapter.c:59
+#19   space_run_replace_triggers () at box/space.c:929
+#24   box_replace () at box/box.cc:4043
+#25   lbox_replace () at lua/index.c:85 [inlined]
+#26   lbox_replace () at lua/index.c:70  <- C function lbox_replace  <called from a trace, stitched (lj_cont_stitch)>
+#27   lj_BC_FUNCC ()  [VM entry L=0x7ffff6e5b7b8 cframe=0x7fffe1b80ed0]
+#27.1 [lua] tests/lua/crash.lua:47 in function <tests/lua/crash.lua:44>  <called from C: lua_pcall/cpcall>
+#28   lua_pcall () at src/lj_api.c:1142
 ```
+
+The last example leaves frames out (the gaps in the numbers); every line shown is as lj-bt printed it.
 
 ### Known limitations
 
-- In a trace, the frames are those of the last snapshot before the pc: the line may lag a line behind, a fresh inlined frame may be missing, and the function may be one that later tail-called further.
-- arm64 is checked by CI only. Its layouts come from `lj_frame.h` and `vm_arm64.dasc`: the VM's CFI there is based on the frame pointer, and `BC_JLOOP` lowers sp by 16 as on x64, which the trace unwinder takes into account. arm64 traces keep no trace number in `vmstate`, so the header says just `TRACE`. The register top of the stack (BASE/PC of the VM) is read on x64 only.
-- gdb stops at the bottom of a fiber stack with "previous frame identical" on arm64 (`coro_startup`); that is a `--` note, not a mismatch.
+- In a trace, the frames are those of the snapshot that covers the pc, the one `lj_trace_unwind` would restore: the line may lag a line behind, and the function may be one that later tail-called further.  Inlined frames that no snapshot of the trace holds are not shown: LuaJIT takes a snapshot only where a guard needs one, and around a call from a trace the covering snapshot is the one after the call (`test_core.test_hop_snapshot_frames`: a loop calls two Lua functions inlined into the trace, the second makes an FFI call, and only the loop's frame is there).
+- arm64 is checked by CI only. Its layouts come from `lj_frame.h` and `vm_arm64.dasc`: the VM's CFI there is based on the frame pointer, and `BC_JLOOP` lowers sp by 16 as on x64, which the trace unwinder takes into account. arm64 traces keep no trace number in `vmstate`, so the header says just `TRACE`. The register top of the stack (BASE/PC of the VM, x19/x21 there) is read on arm64 as well, untried outside CI.
+- gdb stops at the bottom of a fiber stack with "previous frame identical" on arm64 (`coro_startup`, and `coro_transfer` with a pc 0 below for a fiber that has not run yet); that is a `--` note, not a mismatch.
 - Lua tail calls are recovered by the heuristic above only; a tail call into C shows as a missing C frame.
 - gdb's inline frames of `-O2` C code are printed as `[inlined]` and not otherwise examined.
 - `tarantool_L` is shared by several fibers whose cframes lie on different C stacks; without `tarantool-gdb.py` such frames are marked, not attributed to a fiber.
-- Not tried: ffi callbacks, hooks, the error handler of `xpcall`, `lua_cpcall` without a frame.
+- Not tried: hooks, `lua_cpcall` without a frame (FFI callbacks and the error handler of `xpcall` are steps of the test generator).
 
 ### Machine-readable output
 
