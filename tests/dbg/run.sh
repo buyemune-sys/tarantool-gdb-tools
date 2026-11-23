@@ -24,7 +24,8 @@
 # one, to see a test of a fix fail before the fix; DBG_GCORE_PAGES,
 # DBG_GDB, DBG_KEEP, DBG_VERBOSE, DBG_UPSTREAM_TIMEOUT, DBG_PYTHON (a
 # python3 with pytest for upstream-tarantool), DBG_CORES_SUMMARY
-# (test_cores.py), TMPDIR.
+# (test_cores.py), DBG_REQUIRE (preconditions that fail a test instead
+# of skipping it: inline-top, kernel-core), TMPDIR.
 # DBG_DEBUGGER=lldb runs the luajit and upstream groups in lldb
 # (DBG_LLDB: the lldb binary; gdb is still needed, see harness.py).
 #

@@ -18,6 +18,12 @@
 #   DBG_DEBUGGER     gdb (default) or lldb: run the scenarios in lldb
 #                    (driver_lldb.py; DBG_LLDB is the lldb binary; gdb
 #                    still reads a TValue below, at import)
+#   DBG_REQUIRE      preconditions that must hold here, comma-separated:
+#                    a test that would skip for one of them fails (CI sets
+#                    those its runners provide).  inline-top: inline
+#                    frames at the top of a crash (gdb has the debug info
+#                    of glibc 2.34+); kernel-core: the kernel writes a
+#                    core file (core_pattern is no pipe, RLIMIT_CORE)
 #   TMPDIR           where work directories go
 #
 # A Scenario is a Lua script, a stop in it and the gdb commands to run
@@ -62,6 +68,17 @@ if DEBUGGER not in ('gdb', 'lldb'):
 
 if not TARANTOOL:
     raise RuntimeError('set LJBT_TARANTOOL to a tarantool binary with DWARF')
+
+REQUIRE = set(s.strip() for s in os.environ.get('DBG_REQUIRE', '').split(',')
+              if s.strip())
+
+
+def precondition(case, name, reason):
+    '''The precondition name of a test does not hold here, for reason:
+    skip the test, or fail it if DBG_REQUIRE has name.'''
+    if name in REQUIRE:
+        case.fail('{} is required here (DBG_REQUIRE): {}'.format(name, reason))
+    case.skipTest('{}: {}'.format(name, reason))
 
 PY_ERROR = 'Error occurred in Python'
 

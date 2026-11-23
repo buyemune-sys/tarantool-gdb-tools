@@ -11,14 +11,19 @@
 # L->base[i].
 
 import functools
+import glob
+import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 import harness as H
 from harness import DbgCase, Scenario, gcval
 from othercore import OtherCore
+from test_cores import core_glob, kernel_core, raise_core_limit
 
 ORACLE_TT = os.path.join(H.HERE, 'oracle_tt.py')
 SOURCES = [H.TT_GDB, ORACLE_TT]
@@ -585,6 +590,309 @@ def thread_outs(case, scen, key):
                              'differs'.format(key, r))
         got.append(('core', core))
     return got
+
+
+# tt-fiber at a crash (#36): an FFI NULL write, and tarantool's crash
+# handler calls abort().  Where gdb has the debug info of glibc 2.34+,
+# the top frames are inline ones: __pthread_kill_implementation and
+# __pthread_kill_internal above __pthread_kill.  Live (gdb stops at the
+# SIGSEGV, then at the SIGABRT of abort()), on the gcore core of that
+# stop, and on the core the kernel writes when the script crashes with
+# no gdb.  Two fibers wait; the Lua side records their C frames as
+# tarantool's own backtrace sees them.  fio starts the coio threads: a
+# thread to switch to and back.
+CRASH_LUA = '''
+local ffi = require('ffi')
+local fiber = require('fiber')
+
+require('fio').stat('.')
+local sleeper = fiber.new(function() fiber.sleep(1000) end)
+sleeper:name('tt-sleeper')
+local cond = fiber.cond()
+local waiter = fiber.new(function() cond:wait() end)
+waiter:name('tt-waiter')
+fiber.yield()
+ORACLE.running = fiber.self():id()
+ORACLE.fibers = {}
+-- The C frames: "#1  0x61a765 in lbox_fiber_sleep+197" (an "L" one is
+-- a Lua frame).
+local info = fiber.info({backtrace = true})
+for _, f in ipairs({sleeper, waiter}) do
+    local bt = {}
+    for _, frame in ipairs(info[f:id()].backtrace or {}) do
+        if frame.C ~= nil then
+            table.insert(bt, frame.C)
+        end
+    end
+    ORACLE.fibers[f:name()] = {fid = f:id(), bt = bt}
+end
+oracle_write()
+ffi.cast('int *', 0)[0] = 1 -- the crash
+'''
+
+
+def tt_fiber(name):
+    return 'eval "tt-fiber %d", $dbg_fiber_id("{}")'.format(name)
+
+
+CRASH_CMDS = [
+    ('signal', 'eval:$_siginfo.si_signo'),
+    ('libs', 'info sharedlibrary'),
+    ('top', 'dbg-frame-types 8'),
+    # Before the first bt: the frame filter of tarantool_gdb.py, once
+    # there, prints some frames otherwise.
+    ('fibers', 'info tt-fibers'),
+    ('top.bt', 'bt'),
+    ('sleeper', tt_fiber('tt-sleeper')),
+    ('sleeper.bt', 'bt'),
+    ('waiter', tt_fiber('tt-waiter')),
+    ('waiter.bt', 'bt'),
+    # The selection survives a flush of the frame cache, and a thread
+    # switch and back.
+    ('flush', 'maint flush register-cache'),
+    ('flush.bt', 'bt'),
+    ('thread.2', 'thread 2'),
+    ('thread.1', 'thread 1'),
+    ('thread.1.bt', 'bt'),
+    ('back', 'eval "tt-fiber %d", main_cord.fiber->fid'),
+    ('back.bt', 'bt'),
+    # What lj-bt does: set_fiber(), reset_fiber().
+    ('ljbt.set', "python FiberUnwinder.instance().set_fiber([f for f in "
+     "Cord().fibers() if f['name'].string() == 'tt-sleeper'][0])"),
+    ('ljbt.set.bt', 'bt'),
+    ('ljbt.reset', 'python FiberUnwinder.instance().reset_fiber()'),
+    ('ljbt.reset.bt', 'bt'),
+]
+
+# No break: gdb stops at the SIGSEGV; the SIGABRT of abort() is the stop.
+# A fiber selected at the SIGSEGV stays selected at the SIGABRT (live
+# only); the commands start from the running fiber.
+CRASH_SETUP = [
+    tt_fiber('tt-sleeper'),
+    'continue',
+    'bt',
+    'eval "tt-fiber %d", main_cord.fiber->fid',
+]
+CRASH = Scenario('crash', CRASH_LUA, [], CRASH_CMDS, setup=CRASH_SETUP,
+                 sources=SOURCES)
+
+
+class KernelCrash(object):
+    '''The script of a scenario run with no gdb: it crashes and the kernel
+    writes its core.  run(): {'core': the result of the commands of the
+    scenario on that core, 'oracle'} or {'reason': why there is none}.'''
+
+    def __init__(self, scen):
+        self.scen = scen
+        self._res = None
+
+    def run(self):
+        if self._res is not None:
+            return self._res
+        wd = tempfile.mkdtemp(prefix='dbg-{}-kernel-'.format(self.scen.name))
+        res = self._res = {'wd': wd, 'core': None}
+        pattern, res['reason'] = kernel_core()
+        if pattern is None:
+            return res
+        script = os.path.join(wd, 'script.lua')
+        with open(script, 'w') as fh:
+            fh.write(self.scen.text())
+        with open(os.path.join(wd, 'tarantool.out'), 'w') as out:
+            p = subprocess.Popen([H.TARANTOOL, script], cwd=wd,
+                                 stdin=subprocess.DEVNULL, stdout=out,
+                                 stderr=subprocess.STDOUT,
+                                 preexec_fn=raise_core_limit)
+            p.wait(timeout=self.scen.timeout)
+        found = glob.glob(core_glob(pattern, p.pid, wd))
+        if not found:
+            res['reason'] = 'no core {} was written (tarantool exited with ' \
+                '{})'.format(core_glob(pattern, p.pid, wd), p.returncode)
+            return res
+        plan = {'binary': H.TARANTOOL, 'core': found[0],
+                'sources': self.scen.sources, 'prep': self.scen.prep,
+                'cmds': self.scen.cmds}
+        res['core'] = self.scen._gdb(wd, plan, 'kernel')
+        res['returncode'] = p.returncode
+        with open(os.path.join(wd, 'oracle.json')) as fh:
+            res['oracle'] = json.load(fh)
+        if H.KEEP != 'cores':
+            os.unlink(found[0])
+        return res
+
+    def cleanup(self):
+        if self._res is not None and not H.KEEP:
+            shutil.rmtree(self._res['wd'], ignore_errors=True)
+
+
+CRASH_KERNEL = KernelCrash(CRASH)
+
+RX_BT = re.compile(r'^#(\d+) +(?:(0x[0-9a-f]+) in )?([\w:<>~.]+)', re.M)
+# A C frame of tarantool's backtrace: its pc and function.
+RX_TT_BT = re.compile(r'^#\d+\s+(0x[0-9a-f]+) in ([^(+]+)')
+
+
+def bt_frames(out):
+    '''[(level, pc or None, function)] of a bt.'''
+    return [(int(n), int(pc, 16) if pc else None, f)
+            for n, pc, f in RX_BT.findall(out)]
+
+
+class CrashChecks(object):
+    '''tt-fiber at the crash of CRASH, in MODE: live, core (the gcore core
+    of the live stop) or kernel (the kernel's core of another run).'''
+    MODE = None
+
+    def crash(self):
+        '''(the result of the commands, the oracle) of MODE.'''
+        if self.MODE == 'kernel':
+            r = CRASH_KERNEL.run()
+            if r['core'] is None:
+                H.precondition(self, 'kernel-core', r['reason'])
+            res, oracle = r['core'], r['oracle']
+        else:
+            res, oracle = CRASH.run()[self.MODE], CRASH.oracle()
+        self.assertIsNone(res.get('fatal'), res.get('fatal'))
+        return res, oracle
+
+    def cmd(self, key):
+        r = self.crash()[0]['cmds'][key]
+        self.assertIsNone(r['err'], '{} ({}): {}'.format(key, self.MODE,
+                                                         r['err']))
+        if self.MODE == 'live' or not isinstance(r['out'], str):
+            return r['out']
+        return H.strip_core_warnings(r['out'])
+
+    def test_crashed(self):
+        # The stop, or the one the core is of: the SIGABRT of abort().
+        self.assertEqual(self.cmd('signal'), 6)
+        if self.MODE == 'kernel':
+            self.assertEqual(CRASH_KERNEL.run()['returncode'], -6)
+
+    def test_inline_top(self):
+        # The precondition of the scenario: inline frames above the
+        # innermost frame the fiber unwinder is asked about.
+        top = [s.split(' ', 2) for s in self.cmd('top').strip().split('\n')]
+        inline = 0
+        while inline < len(top) and top[inline][1] == 'INLINE_FRAME':
+            inline += 1
+        if inline == 0:
+            libc = [s for s in self.cmd('libs').split('\n')
+                    if re.search(r'/libc\.so\.6$', s.strip())]
+            if not libc or '(*)' in libc[0]:
+                why = 'gdb has no debug info for libc.so.6 (libc6-dbg)'
+            else:
+                why = 'gdb has the debug info of libc.so.6'
+            H.precondition(self, 'inline-top', '{}: no inline frame at the '
+                           'top of the crash ({})'.format(why, top))
+        self.assertEqual(top[inline][1], 'NORMAL_FRAME', top)
+
+    def test_switch(self):
+        # bt after tt-fiber N is the stack of fiber N: the C frames the
+        # Lua side saw, in that order, and none of the crash.
+        _, o = self.crash()
+        crash = [f for _, _, f in bt_frames(self.cmd('top.bt'))]
+        self.assertIn('crash_signal_cb', crash)
+        for name in ('tt-sleeper', 'tt-waiter'):
+            fib = o['fibers'][name]
+            key = name[len('tt-'):]
+            self.assertTrue(self.cmd(key).startswith(
+                'Switching stack unwinder to fiber {} '.format(fib['fid'])),
+                self.cmd(key))
+            want = [(int(pc, 16), f) for pc, f in
+                    (RX_TT_BT.match(s).groups() for s in fib['bt'])]
+            self.assertGreater(len(want), 2, fib['bt'])
+            out = self.cmd(key + '.bt')
+            frames = bt_frames(out)
+            got = iter((pc, f) for _, pc, f in frames if pc is not None)
+            missing = [w for w in want if w not in got]
+            self.assertEqual(missing, [], '{} ({}): the frames tarantool '
+                             'saw, {}, are not in bt:\n{}'.format(
+                                 name, self.MODE, fib['bt'], out))
+            names = [f for _, _, f in frames]
+            for f in (crash[0], 'crash_signal_cb'):
+                self.assertNotIn(f, names, '{} ({})'.format(name, self.MODE))
+
+    def test_flush(self):
+        want = self.cmd('waiter.bt')
+        self.assertNotEqual(want, self.cmd('top.bt'), 'no switch')
+        self.assertEqual(self.cmd('flush.bt'), want, 'after a flush')
+        self.assertEqual(self.cmd('thread.1.bt'), want,
+                         'after a thread switch and back')
+
+    def test_back(self):
+        top = self.cmd('top.bt')
+        self.assertEqual(self.cmd('back.bt'), top)
+        self.assertEqual(self.cmd('ljbt.set.bt'), self.cmd('sleeper.bt'))
+        self.assertEqual(self.cmd('ljbt.reset.bt'), top)
+
+
+class TestCrashLive(CrashChecks, DbgCase):
+    MODE = 'live'
+    SCENARIOS = (CRASH,)
+
+    def test_kept(self):
+        # tt-fiber at the SIGSEGV (lj_cconv_ct_ct at frame 0), `continue`
+        # to the SIGABRT: bt there is still the fiber's, from under the
+        # inline frames of the new stop.
+        setup = self.result(CRASH, 'live')['setup']
+        self.assertEqual([err for _, _, err in setup], [None] * 4, setup)
+        self.assertEqual(setup[2][1], self.cmd('sleeper.bt'))
+
+
+# The selection when the thread runs: tt-fiber at a breakpoint, then
+# `stepi` and `continue` to the next stop in the same fiber.  gdb steps
+# over the breakpoint at the pc first, unwinding the frames at the old
+# registers after the thread was resumed; at the stop the innermost
+# frame has new ones.
+STEP_LUA = '''
+local fiber = require('fiber')
+
+local sleeper = fiber.new(function() fiber.sleep(1000) end)
+sleeper:name('tt-sleeper')
+fiber.yield()
+print('one') -- the stop
+print('two') -- the next one
+os.exit(0)
+'''
+
+STEP = Scenario('fiber-step', STEP_LUA, ['break lj_cf_print'], [
+    # Before tt-fiber, which selects a frame of the fiber.
+    ('sleeper.pc', 'eval:$pc'),
+    ('sleeper', tt_fiber('tt-sleeper')),
+    ('sleeper.bt', 'bt'),
+    ('stepi', 'stepi'),
+    ('stepi.pc', 'eval:$pc'),
+    ('stepi.bt', 'bt'),
+    ('cont', 'continue'),
+    ('cont.arg', 'eval:$_streq((char *)(' + strdata(0) + '), "two")'),
+    ('cont.bt', 'bt'),
+], sources=SOURCES, live_only='the thread runs')
+
+
+class TestFiberStep(DbgCase):
+    SCENARIOS = (STEP,)
+
+    def test_stepi(self):
+        self.assertNotEqual(self.out(STEP, 'stepi.pc'),
+                            self.out(STEP, 'sleeper.pc'))
+        want = self.out(STEP, 'sleeper.bt')
+        self.assertIn('lbox_fiber_sleep', want)
+        self.assertEqual(self.out(STEP, 'stepi.bt'), want)
+
+    def test_continue(self):
+        self.assertEqual(self.out(STEP, 'cont.arg'), 1)
+        self.assertEqual(self.out(STEP, 'cont.bt'),
+                         self.out(STEP, 'sleeper.bt'))
+
+
+class TestCrashCore(CrashChecks, DbgCase):
+    MODE = 'core'
+    SCENARIOS = (CRASH,)
+
+
+class TestCrashKernelCore(CrashChecks, DbgCase):
+    MODE = 'kernel'
+    SCENARIOS = (CRASH_KERNEL,)
 
 
 class TestThreadLocal(DbgCase):

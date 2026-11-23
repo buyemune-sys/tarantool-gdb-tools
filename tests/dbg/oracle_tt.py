@@ -103,7 +103,32 @@ class Threads(gdb.Command):
         gdb.write(''.join(out))
 
 
+class FrameTypes(gdb.Command):
+    '''dbg-frame-types [N]: "<level> <type> <function>" of the N (4)
+    newest frames as gdb's unwinders made them (no frame filter), the
+    type a name of gdb.*_FRAME: INLINE_FRAME for a frame of a function
+    inlined into the one below it.'''
+
+    def __init__(self):
+        super(FrameTypes, self).__init__('dbg-frame-types', gdb.COMMAND_DATA)
+
+    def invoke(self, arg, from_tty):
+        names = dict((getattr(gdb, n), n) for n in dir(gdb)
+                     if n.endswith('_FRAME') and
+                     isinstance(getattr(gdb, n), int))
+        frame = gdb.newest_frame()
+        out = []
+        for level in range(int(arg or 4)):
+            if frame is None:
+                break
+            out.append('{} {} {}\n'.format(level, names.get(frame.type(), '?'),
+                                           frame.name()))
+            frame = frame.older()
+        gdb.write(''.join(out))
+
+
 RlistLen()
 StailqLen()
 FiberId()
 Threads()
+FrameTypes()
