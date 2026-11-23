@@ -24,8 +24,8 @@
 # before the fix; DBG_GCORE_PAGES, DBG_GDB, DBG_KEEP, DBG_VERBOSE,
 # DBG_UPSTREAM_TIMEOUT, DBG_PYTHON (a python3 with pytest for
 # upstream-tarantool), DBG_CORES_SUMMARY (test_cores.py), TMPDIR.
-# DBG_DEBUGGER=lldb runs the upstream group in lldb (DBG_LLDB: the
-# lldb binary).
+# DBG_DEBUGGER=lldb runs the luajit and upstream groups in lldb
+# (DBG_LLDB: the lldb binary; gdb is still needed, see harness.py).
 #
 # A single test: tests/dbg/run.sh luajit -- -k TestStack
 set -u

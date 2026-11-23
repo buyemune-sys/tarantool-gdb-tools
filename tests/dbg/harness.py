@@ -14,6 +14,9 @@
 #   DBG_KEEP         keep the work directories (plans, results, gdb logs);
 #                    DBG_KEEP=cores keeps the core files (~40 MB each) too
 #   DBG_VERBOSE      print plans and results
+#   DBG_DEBUGGER     gdb (default) or lldb: run the scenarios in lldb
+#                    (driver_lldb.py; DBG_LLDB is the lldb binary; gdb
+#                    still reads a TValue below, at import)
 #   TMPDIR           where work directories go
 #
 # A Scenario is a Lua script, a stop in it and the gdb commands to run
@@ -48,6 +51,13 @@ GCORE_PAGES = os.environ.get('DBG_GCORE_PAGES') or \
 KEEP = os.environ.get('DBG_KEEP', '')
 VERBOSE = bool(os.environ.get('DBG_VERBOSE'))
 GDB = os.environ.get('DBG_GDB', 'gdb')
+# The debugger the scenarios run in: gdb (driver.py) or lldb
+# (driver_lldb.py, the same plan; its cores are lldb's minidumps).
+DEBUGGER = os.environ.get('DBG_DEBUGGER', 'gdb')
+LLDB = os.environ.get('DBG_LLDB', 'lldb')
+DRIVER_LLDB = os.path.join(HERE, 'driver_lldb.py')
+if DEBUGGER not in ('gdb', 'lldb'):
+    raise RuntimeError('DBG_DEBUGGER is gdb or lldb, not ' + DEBUGGER)
 
 if not TARANTOOL:
     raise RuntimeError('set LJBT_TARANTOOL to a tarantool binary with DWARF')
@@ -202,7 +212,10 @@ class Scenario(object):
         with open(pfile, 'w') as fh:
             json.dump(plan, fh, indent=1)
         env = dict(os.environ, DBG_PLAN=pfile, **self.gdb_env)
-        p = subprocess.run([GDB, '-batch', '-nx', '-x', DRIVER],
+        cmd = [GDB, '-batch', '-nx', '-x', DRIVER] if DEBUGGER == 'gdb' \
+            else [LLDB, '--batch', '--no-lldbinit', '-o',
+                  'command script import ' + DRIVER_LLDB]
+        p = subprocess.run(cmd,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            stdin=subprocess.DEVNULL, universal_newlines=True,
                            timeout=self.timeout, env=env, cwd=wd)

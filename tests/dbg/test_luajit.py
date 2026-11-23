@@ -100,6 +100,8 @@ class TestLoad(DbgCase):
             self.check_load(res['load'])
         self.assertNoPyError(BASIC)
 
+    @unittest.skipIf(H.DEBUGGER == 'lldb', 'luajit_dbg.py has no deferred '
+                     'loading in lldb (check_libluajit: "TODO")')
     def test_deferred(self):
         # Sourced before `file`: it waits for the objfile.
         for mode in DEFERRED.modes():
@@ -1205,6 +1207,13 @@ GC_STATES = [
     ('SWEEP', 'break gc_sweep if g->gc.state == 4'),
     ('FINALIZE', 'break gc_finalize'),
 ]
+if H.DEBUGGER == 'lldb':
+    # lldb puts the breakpoint of the inlined gc_sweep_str_chain at the
+    # start of its range in the cold part of gc_onestep, never reached;
+    # GCSsweepstring is 3 (lj_gc.h).  lldb stops at the entry, before g
+    # is set.
+    GC_STATES[3] = ('SWEEPSTRING', 'break gc_onestep if {}->gc.state == 3'
+                    .format(G('L')))
 GC_SCENARIOS = [Scenario('gc_' + st.lower(), GC_SCRIPT, ['break lj_cf_print'],
                          gc_cmds('tarantool_L'),
                          setup=['delete', brk, 'continue'])
