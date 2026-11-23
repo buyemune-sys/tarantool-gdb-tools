@@ -205,7 +205,8 @@ LuaJIT's gdb (and lldb) extension in one version for every Tarantool 3.x, from 3
 - the `lits` operand of `lj-bc` is signed (`KSHORT -7`, not `65529`);
 - with no `lua_State` (before Tarantool sets `tarantool_L`, and since 3.7 in every thread with no Lua) the commands say so instead of a Python error;
 - if the debug info lacks an enum (it may leave out one used only through its constants, tarantool/tarantool#13094), the built-in members are taken, the same in the LuaJIT of every 3.x, with a note;
-- `lj-gctop [N]`: the number and total size of the GC objects and the N largest, ported from the branch `elhimov/gh-noticket-gdb-gctop`.
+- `lj-gctop [N]`: the number and total size of the GC objects and the N largest, ported from the branch `elhimov/gh-noticket-gdb-gctop`;
+- in lldb: `tarantool_L`, `__thread` since 3.7, is read in a frame (the target has no thread for it, and a frame of assembly or of a library without debug info has no scope), the memory of an expression is got around an lldb-server bug (below), the `.rodata` tables (`lj_bc_mode`, `lj_ir_mode`) are read from the executable on a core, and the commands work whatever the file is named (lldb names the module after it).
 
 ```
 (gdb) source luajit_dbg.py
@@ -214,7 +215,14 @@ LuaJIT's gdb (and lldb) extension in one version for every Tarantool 3.x, from 3
 (lldb) command script import luajit_dbg.py
 ```
 
-`lj-bt` works on top of it as on top of the extension of the release (the bytecode and IR tables are there for every version). lldb is not tested here.
+`lj-bt` works on top of it as on top of the extension of the release (the bytecode and IR tables are there for every version).
+
+In lldb every command works live and on a core (tested on x86_64 with lldb 22, live and on cores, and lldb 18, live; see below), with these differences:
+
+- lldb-server gets the memory of an expression with an `mmap` it runs in the inferior and takes the stop of any pending signal for its end (`NativeProcessLinux::Syscall`, LLVM main as well); Tarantool's low-resolution clock, a 10 ms `ITIMER_REAL`, keeps a `SIGALRM` pending in a stopped process.  The extension allocates until lldb has good pages before its first expression; `p` and `expression` of your own fail the same way before that.
+- the same `SIGALRM` makes `n` stop where it began; `process handle SIGALRM --pass false --stop false` before stepping.
+- no deferred loading: import it after `target create`.
+- lldb on Linux writes minidumps only (`process save-core`); it reads ELF cores (tried with gdb's `gcore`) as usual.
 
 ### Tests
 
@@ -236,6 +244,8 @@ DBG_LUAJIT_DBG=$LJBT_LUAJIT_DBG tests/dbg/run.sh upstream     # the extension of
 ```
 
 `DBG_LUAJIT_DBG` points the tests at another extension, to see a test of a fix fail before it. The cores are written with `gcore-pages`; `DBG_GCORE_PAGES=plain` writes them with gdb's `gcore`, which loses the thread stacks where `gcore-pages` is needed. `DBG_KEEP=1` keeps the work directories in `TMPDIR` (the plan, the result and the gdb log of every run). No scenario of `luajit_dbg.py` calls `box.cfg` or listens on a port.
+
+`DBG_DEBUGGER=lldb` (and `DBG_LLDB=lldb-22`, say) runs the groups `luajit` and `upstream` in lldb: `tests/dbg/driver_lldb.py` runs the same plans, translating their gdb, and writes the cores as lldb's minidumps (modified memory, no `.rodata` as in a kernel core); the upstream tests run in their own lldb mode. gdb is still needed. `.github/workflows/lldb.yml` runs the upstream tests with lldb 18 (Ubuntu 24.04) and 22 (apt.llvm.org), and the `luajit` group with 22, for every 3.x on amd64, `continue-on-error` for now: lldb 18 reads no `__thread` variable from a minidump (it does from an ELF core) and fails to write some.
 
 `.github/workflows/dbg.yml` runs the four groups for 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2 and 3.9.0 on amd64 and arm64 (arm64 `continue-on-error` for now), and the upstream tests once more with the extensions of the release, for the step summary.
 
