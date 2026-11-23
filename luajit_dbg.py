@@ -2089,6 +2089,9 @@ def dump_reg(rtype, value, jmp_format=None, jmp_ctx=None):
             prefix = '+' if delta >= 0 else ''
             value = prefix + str(delta)
     else:
+        if rtype == 'lits' and value > 0x7fff:
+            # A signed 16-bit literal (BCMlits), e.g. KSHORT -1.
+            value -= 0x10000
         value = '{:3d}'.format(value)
 
     return '{rtype:6} {value}'.format(

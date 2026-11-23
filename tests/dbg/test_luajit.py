@@ -590,6 +590,13 @@ class TestProto(DbgCase):
         self.assertIn('string "conststr" @ ', kcs)
         self.assertNoPyError(PROTO)
 
+    def test_func_more(self):
+        # testg: negative literals, constants of every kind, closures,
+        # loops, compared with jit.bc as well.
+        got = self.check_func('funcg', PROTO.oracle()['testg'])
+        self.assertIn(('KSHORT', [('dst', '1'), ('lits', '-7')]),
+                      [(op, ops) for _, op, ops, _ in got])
+
     def test_proto(self):
         self.assertEqual(self.out(PROTO, 'proto'), self.out(PROTO, 'func'))
 
