@@ -13,6 +13,8 @@ The ranges are what CI runs, the last patch of every minor in them; [`extensions
 
 Everything needs DWARF in the Tarantool binary. The static deb of Tarantool's package repository carries it; the stripped static rpm that `tt binary install` puts does not, but the deb binary of the same version has the same build-id and serves as its symbol file (`symbol-file` or `file` in gdb, also for a core of the rpm build).
 
+A self-built Tarantool works as well: a build with DWARF (`RelWithDebInfo` or `Debug`), with or without GC64, which is usually a dynamic PIE that gdb relocates when the program starts, whereas the official packages of 3.x are static non-PIE builds. The scripts keep no address from before the start or from another process, and the `source` workflow builds 3.9.0 that way for the tests, see [CI](#ci).
+
 ## Loading
 
 ### gdb: source
@@ -97,6 +99,7 @@ For a user of the release files: every command on every 3.x (`lj-bc`, `lj-func`,
 - the red zone of `lj-stack` is taken from the stack: it is 7 slots, not 8, in the LuaJIT of 3.0, 3.1 and 3.4;
 - a Lua frame is `[L]`, never `[LP]` (that P was a bit of the return PC);
 - the `lits` operand of `lj-bc` is signed (`KSHORT -7`, not `65529`);
+- `lj_bc_mode` and `lj_ir_mode` are looked up on every use: the value kept from the first lookup had the address of another process after `core-file` of another core or an attach (a PIE moves);
 - with no `lua_State` (before Tarantool sets `tarantool_L`, and since 3.7 in every thread with no Lua) the commands say so instead of a Python error;
 - if the debug info lacks an enum (it may leave out one used only through its constants, tarantool/tarantool#13094), the built-in members are taken, the same in the LuaJIT of every 3.x, with a note;
 - in lldb: `tarantool_L`, `__thread` since 3.7, is read in a frame (the target has no thread for it, and a frame of assembly or of a library without debug info has no scope), the memory of an expression is got around an lldb-server bug (below), the `.rodata` tables (`lj_bc_mode`, `lj_ir_mode`) are read from the executable on a core, and the commands are registered under the module's own name, whatever the file is called.
@@ -178,6 +181,7 @@ Known limitations:
 - the list table has the lists of the older releases (quorum gain/loss up to 3.5, `all_txs` and the vinyl writers up to 3.3, `memtx_tuple` up to 3.5), only what the build has; the list printers survive an error.
 - an unknown MsgPack extension prints as `ext:<type> of len <n>`; no `[invalid]` after a UUID (any 128 bits are one since 3.2).
 - a printer whose enum, variable or type the debug info lacks is off with a note (`tarantool_gdb.py: no value MP_ERROR_MAX in the debug info, the MsgPack error printer is off`), the rest loads; a release fails as a whole.
+- the datetime, MsgPack error and compression printers look their arrays (`zones_unsorted`, `mp_error_field_to_json_key`, `compression_type_strs`) up on use: kept from the load, they had the link-time address of a PIE sourced before `run`; a `tt-list-walk` belongs to one process and starts over in another (on a core of another process it kept walking the old items).
 
 ## luajit_backtrace_gdb.py (lj-bt)
 
@@ -302,6 +306,7 @@ The last example leaves frames out (the gaps in the numbers); every line shown i
 - arm64 is checked by CI only. Its layouts come from `lj_frame.h` and `vm_arm64.dasc`: the VM's CFI there is based on the frame pointer, and `BC_JLOOP` lowers sp by 16 as on x64, which the trace unwinder takes into account. arm64 traces keep no trace number in `vmstate`, so the header says just `TRACE`. The register top of the stack (BASE/PC of the VM, x19/x21 there) is read on arm64 as well, untried outside CI.
 - gdb stops at the bottom of a fiber stack with "previous frame identical" on arm64 (`coro_startup`, and `coro_transfer` with a pc 0 below for a fiber that has not run yet); that is a `--` note, not a mismatch.
 - Lua tail calls are recovered by the heuristic above only; a tail call into C shows as a missing C frame.
+- `tarantool_L` is thread-local since 3.7: where gdb reads no thread-local variable (gdb 15 loads no `libthread_db` for a PIE whose symbols come from `symbol-file`), `lj-bt` has no G. The header says `L=0x0 (none)`, the Lua frames come from the VM entries, and the tail call heuristic does not follow `__index`.
 - gdb's inline frames of `-O2` C code are printed as `[inlined]` and not otherwise examined.
 - `tarantool_L` is shared by several fibers whose cframes lie on different C stacks; without `tarantool_gdb.py` such frames are marked, not attributed to a fiber.
 - Not tried: hooks (the parser of `load()` under `lj_vm_cpcall` without a frame, FFI callbacks and the error handler of `xpcall` are steps of the test generator).
@@ -436,6 +441,10 @@ DBG_LUAJIT_DBG=$LJBT_RELEASE_LUAJIT_DBG tests/dbg/run.sh upstream     # the exte
 
 `DBG_DEBUGGER=lldb` (and `DBG_LLDB=lldb-22`, say) runs the groups `luajit` and `upstream` in lldb: `tests/dbg/driver_lldb.py` runs the same plans, translating their gdb, and writes the cores as lldb's minidumps (modified memory, no `.rodata` as in a kernel core); the upstream tests run in their own lldb mode. gdb is still needed.
 
+The live run sources the extensions before `run`, when gdb has not relocated a PIE yet, the core run after `core-file`. `TestOtherCore` (`tests/dbg/othercore.py`) runs a scenario twice with ASLR on and then its commands on the core of the second run in a gdb session that looked at the core of the first: each output must be the one of a fresh session. On a PIE that catches an address kept from the other process, on any build state kept from it.
+
+`tests/build-tarantool.sh <version> <gc64|nogc64> <dest>` builds a tag from source instead of fetching a deb (a dynamic PIE with DWARF, `LUAJIT_ENABLE_GC64` on or off; the build dependencies are listed in the script) and prints the same variables as `tests/fetch.sh`, the extensions of that source tree as the release ones.
+
 The group `tarantool` (`tests/dbg/test_tarantool.py`) runs one instance (`box.cfg{}` with no listen, its files in a work directory under `TMPDIR`) that builds a space and a tuple, fibers (a sleeper, one with an open transaction) and MsgPack from tarantool's own encoders, and checks every command and printer live and on the `gcore` file of the same stop against what the Lua side knows (`fiber.info()`, the tuple, `tostring()` of decimals, UUIDs and datetimes, `box.txn_id()`) and what gdb reads on its own (list lengths, TLS addresses): fibers in every thread, the fiber switch and its frames, the list commands and printers, tuples from every thread, all MsgPack types and extensions, the thread-local functions, also with gdb's TLS lookup and with parts of the debug info hidden. The core is written with `gcore-pages`, and the output of every thread on it must be the live one: with plain `gcore` (`DBG_GCORE_PAGES=plain`) the thread checks fail where glibc 2.42+ meets a gdb before 18.1.
 
 The group `upstream-tarantool` runs `test/gdb/` of PR #13078 and `tools/test-tarantool-gdb.py` of PR #9665 unchanged with pytest (`python3-pytest`, or `DBG_PYTHON`), their `conftest.py` replaced by `tests/dbg/upstream/tt_fixtures.py` (the core comes from `gcore`, no `core_pattern` needed). `DBG_TT_GDB=$LJBT_RELEASE_TT_GDB` runs them with the file of the release.
@@ -464,6 +473,7 @@ The group `cores` (`tests/dbg/test_cores.py`) runs tarantool with `box.cfg` (the
 | `lldb.yml` | 3.0.2 - 3.9.0 | amd64, arm64 | `upstream` with lldb 18 and 22, `luajit` with lldb 22; the manifest in lldb |
 | `cores.yml` | 3.9.0 | `ubuntu-22.04`, `-24.04`, `-26.04`, amd64 and `-arm` | the group `cores` with the kernel's cores enabled (`sysctl kernel.core_pattern=core.%p`), then `luajit`, `tarantool`, the lj-bt `core` layer and the manifest with the gdb of the runner (12.1, 15.1, 17.1); the `table` job puts a row per runner in the step summary: OS, kernel, glibc, gdb, guard pages, whether `gcore`, `gcore-pages` and the kernel's core keep the stacks |
 | `manifest.yml` | - | - | the static checks of `extensions.json` and the tests of the checks |
+| `source.yml` | 3.9.0 built from source, GC64 and `LUAJIT_ENABLE_GC64=OFF` | amd64 | a dynamic PIE with DWARF from `tests/build-tarantool.sh` (cached under a key with the hash of the script, saved right after the build): every group of `tests/dbg`, and the lj-bt groups oracle, core, random, tail, cli, env and window, after our extensions |
 
 - The binaries are the static debs of Tarantool's package repository (they carry DWARF), cached per version and architecture and shared by the workflows; the extensions of the release come from the tag (`tools/tarantool-gdb.py`) and from tarantool/luajit at the tag's `third_party/luajit` (`luajit-gdb.py` up to 3.5, `luajit_dbg.py` from 3.6).
 - On push and pull requests the long lj-bt groups are cut: 50 seeds, 100 stops, two crash attempts of 20 s. The daily scheduled run takes 200 seeds, 500 stops, three attempts of 40 s.

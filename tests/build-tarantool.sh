@@ -13,11 +13,14 @@
 # 5db8c217) and its tools/tarantool-gdb.py.  The binary is a PIE because
 # the compiler of the distribution makes one by default (Ubuntu); it is
 # checked to be one, with .debug_info and the GC64 mode asked for.
-# Prints the variables for the tests, as tests/fetch.sh does:
+# Prints the variables for the tests, as tests/fetch.sh does: the
+# binary, and the extensions of that source tree under the RELEASE
+# names, so that the tests keep this repo's luajit_gdb.py and
+# tarantool_gdb.py and the originals serve the cross runs:
 #
 #   LJBT_TARANTOOL=<dest>/bin/tarantool
-#   LJBT_LUAJIT_DBG=<dest>/luajit_dbg.py
-#   LJBT_TT_GDB=<dest>/tarantool-gdb.py
+#   LJBT_RELEASE_LUAJIT_DBG=<dest>/luajit_dbg.py
+#   LJBT_RELEASE_TT_GDB=<dest>/tarantool-gdb.py
 #
 # The binary is in bin/: next to it, tarantool-gdb.py would be gdb's
 # auto-load script of the objfile (declined, with a warning, by the
@@ -109,5 +112,5 @@ done
 
 log "$("$bin" --version | head -1), $variant, PIE, $(basename "$ext")"
 echo "LJBT_TARANTOOL=$bin"
-echo "LJBT_LUAJIT_DBG=$ext"
-echo "LJBT_TT_GDB=$dest/tarantool-gdb.py"
+echo "LJBT_RELEASE_LUAJIT_DBG=$ext"
+echo "LJBT_RELEASE_TT_GDB=$dest/tarantool-gdb.py"

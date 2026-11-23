@@ -6,10 +6,10 @@ name: source
 # test.yml, dbg.yml and cores.yml run are static non-PIE GC64 builds:
 # their addresses are the same before and after gdb starts the program,
 # so an address an extension keeps from before the start (or from
-# another process) goes unnoticed there.  The tests of tests/dbg run
-# with the files of this repository; lj-bt takes the gdb extensions of
-# the source tree it was built from (luajit_dbg.py of its LuaJIT,
-# tools/tarantool-gdb.py), as test.yml takes those of each release.
+# another process) goes unnoticed there.  Every test runs with the
+# files of this repository, lj-bt after luajit_gdb.py and
+# tarantool_gdb.py; the extensions of the source tree are printed as
+# LJBT_RELEASE_*, as tests/fetch.sh does for a release.
 #
 # The build of a tag and a variant is cached (the key has the hash of
 # tests/build-tarantool.sh): only the first run of a key builds.
@@ -91,7 +91,7 @@ jobs:
       - name: Let the kernel write cores to files
         run: sudo sysctl -w kernel.core_pattern=core.%p
 
-      - name: luajit_dbg.py tests
+      - name: luajit_gdb.py tests
         run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
         shell: bash
 
@@ -100,7 +100,7 @@ jobs:
         run: tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream.log"; exit "${PIPESTATUS[0]}"
         shell: bash
 
-      - name: tarantool-gdb.py tests
+      - name: tarantool_gdb.py tests
         if: ${{ !cancelled() }}
         run: tests/dbg/run.sh tarantool 2>&1 | tee "$TMPDIR/run-tarantool.log"; exit "${PIPESTATUS[0]}"
         shell: bash
