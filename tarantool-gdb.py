@@ -2628,7 +2628,9 @@ class TlVarSearchRangeParam(gdb.Parameter):
     __title = "range for searching thread-local variables"
     __doc_footer = """
         It is used by $tl_var_find_offset and $tl_var_like functions if
-        "SEARCH_RANGE argument is omitted."""
+        "SEARCH_RANGE argument is omitted, or the size of the TLS segment of
+        the executable if that is larger (in 3.7 and 3.8 cord_ptr is about
+        200 KiB from the thread pointer)."""
 
     def __init__(self):
         self.set_doc = "Set {}.\n{}".format(self.__title, self.__doc_footer)
@@ -2645,6 +2647,35 @@ class TlVarSearchRangeParam(gdb.Parameter):
 
 
 TlVarSearchRangeParam()
+
+
+def tls_segment_size():
+    """p_memsz of the PT_TLS segment of the executable (ELF64), or 0."""
+    try:
+        with open(gdb.current_progspace().filename, 'rb') as fh:
+            ident = fh.read(16)
+            if ident[:4] != b'\x7fELF' or ident[4] != 2:
+                return 0
+            e = '<' if ident[5] == 1 else '>'
+            fh.seek(0x20)
+            phoff = struct.unpack(e + 'Q', fh.read(8))[0]
+            fh.seek(0x36)
+            phentsize, phnum = struct.unpack(e + 'HH', fh.read(4))
+            for i in range(phnum):
+                fh.seek(phoff + i * phentsize)
+                if struct.unpack(e + 'I', fh.read(4))[0] == 7:  # PT_TLS
+                    fh.seek(phoff + i * phentsize + 0x28)       # p_memsz
+                    return struct.unpack(e + 'Q', fh.read(8))[0]
+    except (IOError, OSError, TypeError, struct.error):
+        pass
+    return 0
+
+
+def default_search_range():
+    """tl-var-search-range, or the TLS segment and a page if larger."""
+    page = TlVarFindOffset.PAGE_SIZE
+    size = (tls_segment_size() + 2 * page - 1) // page * page
+    return max(int(gdb.parameter(TlVarSearchRangeParam.param_name) or 0), size)
 
 
 def tls_arch():
@@ -2810,7 +2841,7 @@ See also:
 
     def invoke(self, ref_val, search_range=None):
         if search_range is None:
-            search_range = gdb.parameter(TlVarSearchRangeParam.param_name)
+            search_range = default_search_range()
 
         if search_range < 0:
             raise gdb.GdbError("Invalid range {}. It must be greater than zero.".format(search_range))
@@ -2996,8 +3027,8 @@ class ThreadLocal(object):
         block = self.block_offset(self.name)
         if block is not None:
             if self.name == name:
-                offset = tl_var_find_offset.find_offset(self.pattern(ref), int(
-                    gdb.parameter(TlVarSearchRangeParam.param_name)))
+                offset = tl_var_find_offset.find_offset(
+                    self.pattern(ref), default_search_range())
                 if offset is not None:
                     return offset
             else:
