@@ -1371,6 +1371,11 @@ class TestEnumFallback(DbgCase):
         self.assertEqual(sorted(used), sorted(ENUM_MAXES))
 
 
+@unittest.skipIf(H.DEBUGGER == 'lldb',
+                 'othercore.py drives gdb: it replays the gdb plan of the '
+                 'core run (core.plan.json) in a gdb session that looked at '
+                 'another core; driver_lldb.py writes no such plan '
+                 '(buyemune-sys/tarantool-gdb-tools#32)')
 class TestOtherCore(DbgCase):
     '''The commands on a core after a core of another process (see
     othercore.py): lj-bc, lj-proto and lj-func read lj_bc_mode, lj-trace
