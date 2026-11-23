@@ -4,14 +4,16 @@
 #   tests/dbg/run.sh [GROUP...] [-- unittest arguments]
 #
 # Groups:
-#   luajit   luajit_dbg.py: every command live and on a core (default)
-#   all      every group
+#   luajit    luajit_dbg.py: every command live and on a core (default)
+#   upstream  the vendored LuaJIT debugger tests (upstream/), run against
+#             tarantool by upstream/run_luajit.py
+#   all       every group
 #
 # Environment (see tests/dbg/harness.py): LJBT_TARANTOOL is required (a
 # tarantool binary with DWARF, as tests/fetch.sh prints); DBG_LUAJIT_DBG
 # runs the tests against another luajit_dbg.py, e.g. the upstream one,
 # to see a test of a fix fail before the fix; DBG_KEEP, DBG_VERBOSE,
-# TMPDIR.
+# DBG_UPSTREAM_TIMEOUT, TMPDIR.
 #
 # A single test: tests/dbg/run.sh luajit -- -k TestStack
 set -u
@@ -25,16 +27,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -z "$groups" ] && groups=luajit
-[ "$groups" = " all" ] && groups=luajit
+[ "$groups" = " all" ] && groups="luajit upstream"
 cd "$here" || exit 1
 export PYTHONDONTWRITEBYTECODE=1
 rc=0
 for g in $groups; do
+    echo "### $g"
     case $g in
-    luajit) mod=test_luajit ;;
+    luajit) python3 -m unittest -v "$@" test_luajit || rc=1 ;;
+    upstream) python3 upstream/run_luajit.py "$@" || rc=1 ;;
     *) echo "unknown group: $g" >&2; exit 2 ;;
     esac
-    echo "### $g"
-    python3 -m unittest -v "$@" $mod || rc=1
 done
 exit $rc

@@ -7,7 +7,8 @@
 #                    this repo; point it at an upstream copy to see a
 #                    test of a fix fail before the fix)
 #   DBG_TT_GDB       the tarantool-gdb.py under test (default: this repo)
-#   DBG_KEEP         keep work directories and core files
+#   DBG_KEEP         keep the work directories (plans, results, gdb logs);
+#                    DBG_KEEP=cores keeps the core files (~40 MB each) too
 #   DBG_VERBOSE      print plans and results
 #   TMPDIR           where work directories go
 #
@@ -37,7 +38,7 @@ LUAJIT_DBG = os.environ.get('DBG_LUAJIT_DBG') or \
     os.path.join(ROOT, 'luajit_dbg.py')
 TT_GDB = os.environ.get('DBG_TT_GDB') or \
     os.path.join(ROOT, 'tarantool-gdb.py')
-KEEP = bool(os.environ.get('DBG_KEEP'))
+KEEP = os.environ.get('DBG_KEEP', '')
 VERBOSE = bool(os.environ.get('DBG_VERBOSE'))
 GDB = os.environ.get('DBG_GDB', 'gdb')
 
@@ -179,9 +180,8 @@ class Scenario(object):
                 res['core'] = {'fatal': 'no core file was written',
                                'cmds': {}, 'load': '', 'setup': []}
         self._res = res
-        if not KEEP:
-            if os.path.exists(core):
-                os.unlink(core)
+        if KEEP != 'cores' and os.path.exists(core):
+            os.unlink(core)
         return res
 
     def text(self):
