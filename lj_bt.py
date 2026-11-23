@@ -282,12 +282,21 @@ class LJBTConf(object):
         self.ir = ljbt_enum_or_table('IR_KGC', 'IRS', 'IR', self.info)
         self.funcf_ops = set(self.bc[n] for n in ('FUNCF', 'IFUNCF',
                                                   'JFUNCF') if n in self.bc)
-        self.bcmode = None      # lj_bc_mode[], read on first use.
+        # lj_bc_mode[] of DWARF, read on first use; a build may lack it as
+        # it may lack the enums: then the modes by name, noted.
+        self.bcmode = None
+        try:
+            self.bcmode_arr = ljbt_eval('lj_bc_mode')
+        except gdb.error:
+            self.bcmode = [ljbt_bcmode_a_by_name(self.bcname.get(op))
+                           for op in range(max(self.bc.values()) + 1)]
+            self.info.append('bytecode operand modes from the table of '
+                             'lj-bt: no lj_bc_mode in DWARF')
 
     def bcmode_a(self, op):
         '''bcmode_a() of lj_bc.h: the mode of operand A.'''
         if self.bcmode is None:
-            arr = ljbt_eval('lj_bc_mode')
+            arr = self.bcmode_arr
             self.bcmode = [int(arr[i]) for i in range(max(self.bc.values())
                                                       + 1)]
         return self.bcmode[op] & 7
@@ -1417,6 +1426,25 @@ LJBT_MORE_FRAMES = '-- more frames follow (use -n)'
 LJBT_BCM_DST, LJBT_BCM_BASE = 1, 2      # BCMdst, BCMbase (lj_bc.h)
 LJBT_VARNAME_MAX = 7                    # VARNAME__MAX, lj_debug.h:62-67
 LJBT_GCROOT_MMNAME = 0                  # GCROOT_MMNAME, lj_obj.h; MM_index
+
+# Operand A of the bytecodes (lj_bc.h BCDEF) where lj_bc_mode is not in
+# DWARF: the heuristic tells only dst and base from the rest.
+LJBT_BCM_A_DST = frozenset((
+    'ISTC ISFC MOV NOT UNM LEN ADDVN SUBVN MULVN DIVVN MODVN ADDNV SUBNV '
+    'MULNV DIVNV MODNV ADDVV SUBVV MULVV DIVVV MODVV POW CAT KSTR KCDATA '
+    'KSHORT KNUM KPRI UGET FNEW TNEW TDUP GGET TGETV TGETS TGETB TGETR')
+    .split())
+LJBT_BCM_A_BASE = frozenset((
+    'KNIL TSETM CALLM CALL CALLMT CALLT ITERC ITERN VARG ISNEXT RETM FORI '
+    'JFORI FORL IFORL JFORL ITERL IITERL JITERL').split())
+
+
+def ljbt_bcmode_a_by_name(name):
+    if name in LJBT_BCM_A_DST:
+        return LJBT_BCM_DST
+    if name in LJBT_BCM_A_BASE:
+        return LJBT_BCM_BASE
+    return 0
 
 
 def ljbt_bc(name):

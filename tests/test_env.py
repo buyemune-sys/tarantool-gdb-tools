@@ -250,6 +250,49 @@ print('BOTTOMS ' + json.dumps(res))
                     self.assertIn('[heuristic]', out)
                     self.assertNotRegex(out, r'(?m)^\s*!!')
 
+    def test_no_bc_mode_in_dwarf(self):
+        # lj_bc_mode[] (the operand modes the tail call heuristic decodes
+        # the bytecode with) may be absent from DWARF like the enums; the
+        # extensions have no table of it.  lj-bt takes its own, noted;
+        # before, every heuristic line went silently.
+        hide = self.wd.write('nobcmode.py', (
+            'import gdb\n'
+            '_orig_eval = ljbt_eval\n'
+            'def ljbt_eval(expr):\n'
+            '    if expr == "lj_bc_mode":\n'
+            '        raise gdb.error("No symbol \\"lj_bc_mode\\" in current '
+            'context.")\n'
+            '    return _orig_eval(expr)\n'))
+        out = self.gdb(C.gdb_prelude() + 'source {}\n'.format(hide) +
+                       STOPS.format(cmd='lj-bt\nkill'), scenario())
+        self.assertRegex(out, r'(?m)^-- bytecode operand modes from the '
+                              r'table of lj-bt')
+        self.assertNotIn('Traceback', out)
+        self.assertIn("(tail call from global 'lj_a' = ", out)
+        self.assertNotRegex(out, r'(?m)^\s*!!')
+
+    def test_bc_mode_table(self):
+        # The table of lj-bt is what lj_bc_mode says of every bytecode of
+        # this build, as far as the heuristic tells modes apart.
+        out = self.gdb(C.gdb_prelude() + (
+            'python\n'
+            'bc = ljbt_enum("BC_CALL")\n'
+            'arr = ljbt_eval("lj_bc_mode")\n'
+            'bad = []\n'
+            'for name, op in sorted(bc.items()):\n'
+            '    if name.startswith("_"):\n'
+            '        continue\n'
+            '    m = int(arr[op]) & 7\n'
+            '    m = m if m in (LJBT_BCM_DST, LJBT_BCM_BASE) else 0\n'
+            '    if ljbt_bcmode_a_by_name(name) != m:\n'
+            '        bad.append((name, m))\n'
+            'print("BCMODE", len(bc), bad)\n'
+            'end\n'), [])
+        m = re.search(r'(?m)^BCMODE (\d+) (.*)$', out)
+        self.assertIsNotNone(m, out)
+        self.assertGreater(int(m.group(1)), 90)
+        self.assertEqual(m.group(2), '[]')
+
     def test_example(self):
         # examples/example.gdb as README says to run it, from the root.
         with open(os.path.join(C.ROOT, 'examples', 'example.gdb')) as fh:
