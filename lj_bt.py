@@ -342,15 +342,24 @@ def ljbt_reset(event=None):
 def ljbt_running_fiber():
     '''The fiber running in the selected thread, cord_ptr->fiber, as
     fiber() of tarantool-gdb.py reads it (but without it loaded); None
-    where there is none.'''
+    where there is none.  By symbol, no expression: the stop handler
+    calls it, see ljbt_on_stop.'''
     try:
-        return int(ljbt_eval('cord_ptr')['fiber'])
+        sym = gdb.lookup_global_symbol('cord_ptr') or \
+            gdb.lookup_static_symbol('cord_ptr')
+        if sym is None:
+            return None
+        return int(sym.value(gdb.selected_frame())['fiber'])
     except Exception:
         return None
 
 
-@ljbt_in_c
 def ljbt_on_stop(event):
+    '''No gdb.execute here, nor anything that may call it (LJBTLangC,
+    the conf): gdb.execute runs the commands of the breakpoint stopped
+    at, and from a stop handler that is before the other handlers and
+    before gdb itself would; a `continue` there nests the next stop in
+    this one.  The conf is built on first use.'''
     ljbt_reset()
     # tarantool-gdb.py keeps the fiber picked by `tt-fiber` (or the one
     # running when its unwinder was created) across `continue`: after a
@@ -367,14 +376,10 @@ def ljbt_on_stop(event):
             cur != LJBT_STATE['fiber']:
         try:
             FU.instance().reset_fiber()
+            gdb.invalidate_cached_frames()
         except Exception:
             pass
     LJBT_STATE['fiber'] = cur
-    try:
-        ljbt_conf()
-        gdb.invalidate_cached_frames()
-    except Exception:
-        LJBT_STATE['conf'] = None
 
 
 # Memory. ########################################################
@@ -1121,7 +1126,28 @@ if LJBT_HAVE_UNWINDER:
             finally:
                 LJBTTraceUnwinder.busy = False
 
+        @staticmethod
+        def in_objfile(pc):
+            '''Machine code of a trace is in no objfile.  Asked first, so
+            that the conf is built only for a frame that may be one: the
+            build may switch the language with gdb.execute, which at a
+            stop runs the breakpoint's commands (see ljbt_on_stop), and gdb
+            asks the unwinder about frame #0 there.'''
+            try:
+                return gdb.current_progspace().objfile_for_address(pc) \
+                    is not None
+            except AttributeError:      # gdb < 13: by debug info only.
+                return gdb.block_for_pc(pc) is not None
+            except (gdb.error, RuntimeError):
+                return False
+
         def __call__(self, pf):
+            try:
+                if self.in_objfile(int(pf.pc() if hasattr(pf, 'pc') else
+                                       pf.read_register('pc'))):
+                    return None
+            except (gdb.error, ValueError):
+                pass
             c = self.conf()
             if c is None or not c.G:
                 return None

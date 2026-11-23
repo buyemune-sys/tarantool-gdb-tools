@@ -178,6 +178,33 @@ print('BOTTOMS ' + json.dumps(res))
         self.assertRegex(out, r'(?m)^#\d+\.\d+\s+\[lua\] ')
         self.assertNotRegex(out, r'(?m)^\s*!!')
 
+    def test_stop_handlers_first(self):
+        # A stop handler of another extension sees the stop before the
+        # commands of the breakpoint run, as without lj-bt.  gdb.execute
+        # runs those commands; lj-bt's handler used it (set language c,
+        # when the language is not C at the stop: C++ here, as the auto
+        # language often is, e.g. at the first stop after `run`, main
+        # being C++), so a `continue` there nested the next stop in the
+        # handler, and the handlers after it got each stop late.
+        rec = ('python\nimport gdb\nLJBT_ORDER = []\n'
+               'gdb.events.stop.connect(lambda e: LJBT_ORDER.append("ev"))\n'
+               'end\nset language c++\n')
+        cmd = 'python LJBT_ORDER.append("cmd")\nlj-bt -o {}'.format(
+            self.wd.file('ljbt.txt'))
+        out = self.gdb(C.gdb_prelude() + rec +
+                       STOPS.format(cmd=cmd).replace(
+                           'enable 1', 'python LJBT_ORDER.append("cmd")\n'
+                           'enable 1') +
+                       'python print("ORDER", " ".join(LJBT_ORDER))\n',
+                       scenario())
+        order = re.search(r'(?m)^ORDER (.*)$', out)
+        self.assertIsNotNone(order, out)
+        order = order.group(1).split()
+        self.assertGreaterEqual(order.count('cmd'), 5, order)
+        self.assertEqual(order, ['ev', 'cmd'] * (len(order) // 2))
+        with open(self.wd.file('ljbt.txt')) as fh:
+            self.assertRegex(fh.read(), r'(?m)^#\d+\.\d+\s+\[lua\] ')
+
     def test_limits_marked(self):
         lim = self.wd.write('limits.py', 'LJBT_LIMITS.update(cframes=1, '
                             'links=3)\n')
