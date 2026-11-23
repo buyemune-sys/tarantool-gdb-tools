@@ -1,0 +1,101 @@
+name: lldb
+
+# luajit_dbg.py in lldb against the official static builds of every
+# Tarantool CE 3.x minor (amd64): LuaJIT's own debugger tests in their
+# lldb mode (tests/dbg/run.sh upstream, live), with lldb 18 (the one of
+# Ubuntu 24.04) and lldb 22 (apt.llvm.org), and tests/dbg/test_luajit.py
+# run by driver_lldb.py (every command live and on a core) with 22.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '53 2 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tarantool version, or "all"'
+        default: all
+        type: choice
+        options: [all, 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2, 3.9.0]
+
+permissions:
+  contents: read
+
+jobs:
+  lldb:
+    name: tarantool ${{ matrix.version }} lldb ${{ matrix.lldb }}
+    runs-on: ubuntu-24.04
+    # New: report, do not fail the workflow, until it is green.
+    continue-on-error: true
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON((inputs.version || 'all') == 'all' && '["3.0.2", "3.1.2", "3.2.4", "3.3.5", "3.4.2", "3.5.2", "3.6.4", "3.7.2", "3.8.2", "3.9.0"]' || format('["{0}"]', inputs.version)) }}
+        lldb: [18, 22]
+    env:
+      DBG_KEEP: 1
+      DBG_DEBUGGER: lldb
+      DBG_LLDB: lldb-${{ matrix.lldb }}
+      # The same download as test.yml and dbg.yml: the cache is shared.
+      DL: ${{ github.workspace }}/.ljbt-dl/${{ matrix.version }}-amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install lldb ${{ matrix.lldb }} and gdb
+        run: |
+          if [ ${{ matrix.lldb }} != 18 ]; then
+            curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
+              sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+            echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ matrix.lldb }} main" |
+              sudo tee /etc/apt/sources.list.d/llvm.list
+          fi
+          sudo apt-get update
+          # gdb: the harness reads a TValue with it before the tests.
+          sudo apt-get install -y gdb lldb-${{ matrix.lldb }} python3-lldb-${{ matrix.lldb }}
+          lldb-${{ matrix.lldb }} --version
+
+      - name: Cache the Tarantool build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DL }}
+          key: tarantool-${{ matrix.version }}-amd64-v1
+
+      - name: Fetch Tarantool ${{ matrix.version }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tests/fetch.sh ${{ matrix.version }} amd64 "$DL" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}/dbg" >> "$GITHUB_ENV"
+          mkdir -p "${{ runner.temp }}/dbg"
+
+      - name: LuaJIT's debugger tests in lldb
+        run: tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      # Their cores are lldb's minidumps: lldb 18 reads no __thread
+      # variable from one (tarantool_L, 3.7+) and fails to write some
+      # ("no ObjectFile plugins were able to save a core").  It reads
+      # ELF cores (gdb's gcore) as lldb 22 does.
+      - name: luajit_dbg.py tests in lldb
+        if: ${{ !cancelled() && matrix.lldb != 18 }}
+        run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "### lldb ${{ matrix.lldb }}, tarantool ${{ matrix.version }}"
+            echo '```'
+            grep -hE '^(FAIL|ERROR):|^Ran |^OK|^FAILED' "$TMPDIR"/run-*.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lldb-logs-${{ matrix.version }}-lldb${{ matrix.lldb }}
+          path: ${{ runner.temp }}/dbg
+          retention-days: 14
