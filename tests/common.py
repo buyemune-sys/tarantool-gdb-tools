@@ -315,10 +315,11 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
     else:
         # Lines in and around traces come from snapshots: compare the
         # functions only.  Inside a trace the inlined frames are those of
-        # the last exit before the pc: newer frames may be missing and a
-        # frame may still be a function that tail-called since; so they
-        # only have to be functions of the chain, and the real frames a
-        # subsequence of the model.
+        # the snapshot that covers the pc: newer frames may be missing and
+        # a frame may still be a function that tail-called since; so they
+        # only have to be functions of the chain.  The real frames are
+        # those below the trace's band, the oldest ones: a prefix of the
+        # model.
         ents = entries(doc)
 
         def from_snapshot(e):
@@ -330,7 +331,7 @@ def check_chain(ch, recs, oracle, tokens, oracle_tokens):
         short = [t[:2] for t in tokens([e for e in ents
                                         if not from_snapshot(e)])]
         model = [t[:2] for t in ch.model]
-        ok = is_subsequence(short, model) if in_trace else short == model
+        ok = short == (model[:len(short)] if in_trace else model)
         if not ok:
             probs.append('model mismatch (jit{}):\n  lj-bt {}\n  model {}'
                          .format(', in a trace' if in_trace else '',
