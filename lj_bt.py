@@ -203,6 +203,12 @@ LJBT_STACK_BOTTOMS = ('coro_startup', 'coro_init', 'start_thread', 'clone',
                       'clone3', '__clone', '_start', '__libc_start_main',
                       '__libc_start_call_main', 'thread_start')
 
+# The context libcoro's coro_create makes for a new fiber returns to a
+# null address from one of these: a fiber that has not run yet unwinds to
+# them and a frame with pc 0 (gdb stops there with "previous frame
+# identical" on arm64).
+LJBT_CORO_FRESH = ('coro_transfer', 'coro_init', 'coro_startup')
+
 LJBT_TV = 8                     # sizeof(TValue)
 LJBT_CFRAME_RESUME = 1          # lj_frame.h:275
 LJBT_CFRAME_RAWMASK = ~3        # lj_frame.h:277
@@ -1323,6 +1329,7 @@ def ljbt_walk_cstack(skip0, limit):
         f = gdb.newest_frame()
     except gdb.error as e:
         return out, ['!! no stack: {}'.format(e)]
+    newer = None
     while f is not None and len(out) < limit:
         if not (skip0 and f.level() == 0):
             try:
@@ -1338,13 +1345,27 @@ def ljbt_walk_cstack(skip0, limit):
             r = f.unwind_stop_reason()
             if r not in (gdb.FRAME_UNWIND_NO_REASON,
                          gdb.FRAME_UNWIND_OUTERMOST):
-                why = gdb.frame_stop_reason_string(r)
-                if f.name() in LJBT_STACK_BOTTOMS:
-                    notes.append('-- unwinding stopped at {}, the bottom of '
-                                 'the stack: {}'.format(f.name(), why))
-                else:
-                    notes.append('!! unwinding stopped: {}'.format(why))
-        f = nf
+                notes.append(ljbt_unwind_end(f, newer,
+                                             gdb.frame_stop_reason_string(r)))
+        newer, f = f, nf
+    if f is not None and len(out) >= limit:
+        notes.append(LJBT_MORE_FRAMES)
+    return out, notes
+
+
+def ljbt_unwind_end(f, newer, why):
+    '''The note on a walk that gdb ended with a reason (why): "--" at the
+    bottom of a stack, "!!" anywhere else.'''
+    name = f.name()
+    if name in LJBT_STACK_BOTTOMS:
+        return '-- unwinding stopped at {}, the bottom of the stack: {}'.format(
+            name, why)
+    newer_name = newer.name() if newer is not None else None
+    if f.pc() == 0 and newer_name in LJBT_CORO_FRESH:
+        return ('-- unwinding stopped at pc 0 below {}, the bottom of the '
+                'context coro_create makes: a fiber that has not run yet: '
+                '{}'.format(newer_name, why))
+    return '!! unwinding stopped: {}'.format(why)
     if f is not None and len(out) >= limit:
         notes.append(LJBT_MORE_FRAMES)
     return out, notes

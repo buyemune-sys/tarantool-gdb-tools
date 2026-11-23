@@ -3,6 +3,7 @@
 # with `symbol-file` of the original, as README promises), the walk
 # limits, examples/example.gdb, a LuaJIT extension of another release.
 
+import json
 import os
 import re
 import shutil
@@ -64,6 +65,79 @@ class EnvTest(unittest.TestCase):
         self.assertRegex(out, r'missing: G, J, frame_ftsz, vm_state, '
                               r'LJ_GC64, LJ_FR2')
         self.assertNotIn('lj-bt command initialized', out)
+
+    def test_stack_bottoms(self):
+        # How the walk of the C stack ends, on fake frames: the bottom of
+        # a fiber that has not run yet (coro_create's context: pc 0 below
+        # coro_transfer, "previous frame identical" on arm64, as fiber 103
+        # "on_shutdown" of every Tarantool) is a "--" note, as is a named
+        # bottom; pc 0 anywhere else and a nameless end stay "!!".
+        cases = {
+            'fresh_arm64': [('fiber_yield', 0x10), ('coro_transfer', 0x20),
+                            (None, 0, 'SAME_ID')],
+            'fresh_amd64': [('coro_init', 0x20), (None, 0, 'OUTERMOST')],
+            'pc0_elsewhere': [('fiber_yield', 0x10), ('memcpy', 0x20),
+                              (None, 0, 'SAME_ID')],
+            'named_bottom': [('fiber_loop', 0x10),
+                             ('coro_startup', 0x20, 'SAME_ID')],
+            'garbage': [('fiber_yield', 0x10), (None, 0x30, 'SAME_ID')],
+        }
+        script = self.wd.write('bottoms.py', '''\
+import json
+import gdb
+
+
+class Fake(object):
+    def __init__(self, frames, i):
+        self.frames, self.i = frames, i
+
+    def level(self):
+        return self.i
+
+    def name(self):
+        return self.frames[self.i][0]
+
+    def pc(self):
+        return self.frames[self.i][1]
+
+    def older(self):
+        if self.i + 1 < len(self.frames):
+            return Fake(self.frames, self.i + 1)
+        return None
+
+    def unwind_stop_reason(self):
+        f = self.frames[self.i]
+        return getattr(gdb, 'FRAME_UNWIND_' + (f[2] if len(f) > 2 else
+                                               'NO_REASON'))
+
+
+res = {}
+real = gdb.newest_frame, LJBTCFrame
+LJBTCFrame = lambda f: f.name()
+try:
+    for k, frames in json.loads(%r).items():
+        gdb.newest_frame = lambda: Fake(frames, 0)
+        res[k] = ljbt_walk_cstack(False, 256)
+finally:
+    gdb.newest_frame, LJBTCFrame = real
+print('BOTTOMS ' + json.dumps(res))
+''' % json.dumps(cases))
+        out = self.gdb('source {}\nsource {}\nsource {}\n'.format(
+            C.LUAJIT_DBG, C.LJ_BT, script))
+        m = re.search(r'(?m)^BOTTOMS (.*)$', out)
+        self.assertIsNotNone(m, out)
+        res = json.loads(m.group(1))
+        notes = dict((k, v[1]) for k, v in res.items())
+        self.assertEqual(len(notes['fresh_arm64']), 1, notes)
+        self.assertRegex(notes['fresh_arm64'][0],
+                         r'^-- .*pc 0 below coro_transfer.*has not run yet')
+        self.assertEqual(notes['fresh_amd64'], [])
+        self.assertRegex(notes['named_bottom'][0], r'^-- .*coro_startup')
+        for k in ('pc0_elsewhere', 'garbage'):
+            self.assertEqual(len(notes[k]), 1, notes)
+            self.assertRegex(notes[k][0], r'^!! unwinding stopped: ', k)
+        self.assertEqual(res['fresh_arm64'][0],
+                         ['fiber_yield', 'coro_transfer', None])
 
     def test_not_initialized(self):
         # No binary: luajit_dbg.py postpones its setup, LJ_GC64 is None.
