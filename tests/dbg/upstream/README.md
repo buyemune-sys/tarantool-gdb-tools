@@ -15,9 +15,10 @@ The upstream file runs gdb (or lldb) against the luajit binary.
 `LUAJIT_TEST_BINARY` to `$LJBT_TARANTOOL`, `DEBUGGER_EXTENSION_PATH` to a
 directory with the extension under test (`$DBG_LUAJIT_DBG`, default the
 `luajit_dbg.py` of this repo) and `DEBUGGER_COMMAND` to `gdb-tarantool`:
-gdb with `tarantool.gdb`, whose `hook-run` puts `-e 'jit.flush()'` in
-front of the inferior arguments, so that the first trace of a test
-script is trace 1 as in plain LuaJIT.
+gdb with `tarantool.gdb`, whose `hook-run` puts
+`-e "jit.opt.start('hotloop=56') jit.flush()"` in front of the inferior
+arguments: the first trace of a test script is trace 1 as in plain
+LuaJIT, and no Lua of tarantool's startup is about to become hot.
 
 ```
 LJBT_TARANTOOL=<tarantool with DWARF> python3 tests/dbg/upstream/run_luajit.py
@@ -25,8 +26,11 @@ LJBT_TARANTOOL=... DBG_LUAJIT_DBG=<dir>/luajit-gdb.py python3 tests/dbg/upstream
 ```
 
 Tests that cannot pass against tarantool whatever the extension does
-are skipped with the reason (`TARANTOOL_SKIPS` in `run_luajit.py`):
+are skipped with the reason (`tarantool_skips()` in `run_luajit.py`):
 tarantool's `print` is a Lua wrapper, its startup Lua reaches the
 breakpoints first, it declares `getpid()`, every trace starts with its
-own hook check. `tests/dbg/test_luajit.py` checks the same commands in
-the form tarantool allows, live and on cores.
+own hook check, and before 3.7 the first GC cycle runs before
+`tarantool_L` is set. `tests/dbg/test_luajit.py` checks the same
+commands in the form tarantool allows, live and on cores. The runner
+gives a gdb run 60 s (`DBG_UPSTREAM_TIMEOUT`) instead of the upstream
+10, and tells `TestLoad` about `lj-gctop`, not upstream yet.
