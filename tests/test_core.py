@@ -24,16 +24,7 @@ HOP = 7                 # The seq of the JIT chain with the FFI target.
 
 # The first command on a core, before the probe.
 BT_FIRST = 'echo ==bt-first\\n\nbt\necho ==bt-end\\n\n'
-
-
-def shape(doc):
-    '''What must not depend on live vs core.'''
-    res = []
-    for f in doc['frames']:
-        res.append((f['level'], f['kind'], f['name'],
-                    (f['folded'] or {}).get('text'),
-                    tuple(e['text'] for e in f['lua'])))
-    return res, [n for n in doc['notes']]
+shape = C.shape
 
 
 class CoreMixin(object):

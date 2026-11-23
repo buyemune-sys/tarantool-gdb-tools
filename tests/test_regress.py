@@ -2,9 +2,11 @@
 #
 # * The tail call heuristic: a positive and negative table (tail.lua).
 # * The sysprof crashes in mode C (crash.lua: trigger, json, netbox,
-#   sortlong): at the SIGSEGV no Python exception, a "!!" naming the
-#   inconsistency, and the right Lua frame.  The crashes are races: each
-#   workload gets LJBT_ATTEMPTS runs; no crash in all of them is a skip.
+#   sortlong): at the SIGSEGV no Python exception, the C frames of bt,
+#   the shape of the crash of that workload (frames from the signal on,
+#   Lua lines, the shift of sysprof's stale top_frame), and the same
+#   lj-bt on a gcore of the crash.  The crashes are races: each workload
+#   gets LJBT_ATTEMPTS runs; no crash in all of them is a skip.
 
 import os
 import re
@@ -115,8 +117,74 @@ class TailMixin(object):
             self.assert_called(rec, ["method 'get'"])
 
 
+CRASH_LUA = os.path.join(C.LUA, 'crash.lua')
+
+
+def crash_line(marker):
+    with open(CRASH_LUA) as fh:
+        return next(i + 1 for i, s in enumerate(fh.read().splitlines())
+                    if marker in s)
+
+
+RX_SYSPROF = re.compile(
+    r'!! sysprof walks cur_L from top_frame_info\.top_frame-1 = '
+    r'0x[0-9a-f]+, (the top frame is 0x[0-9a-f]+ \(([-+]\d+) slots\)|'
+    r'a frame link that is overwritten)')
+
+
+def frame_tokens(doc):
+    '''The frames from the signal frame on (the sysprof handler is above
+    it) as kind:name, "=func" for the Lua C function folded in, each with
+    a "|" after it; None without a signal frame.'''
+    fr = doc['frames']
+    k = next((i for i, f in enumerate(fr) if f['kind'] == 'sig'), None)
+    if k is None:
+        return None
+    return ''.join('{}:{}{}|'.format(
+        f['kind'], f['name'],
+        '=' + f['folded']['func'] if f.get('folded') else '')
+        for f in fr[k:])
+
+
+def lua_text(doc):
+    '''The Lua lines of the VM bands, newest first, joined by "|".'''
+    return '|'.join(e['text'] for f in doc['frames'] for e in f['lua'])
+
+
+def from_signal(doc):
+    '''C.shape from the signal frame on, levels counted from it, with the
+    marks of the frames; the frames above it (name, inline); the notes.
+    At the stop of a live process gdb hides the inlined frames whose
+    block starts at the pc (as if stepped to their call), on a core it
+    shows them: the levels differ by those.'''
+    fr = doc['frames']
+    k = next(i for i, f in enumerate(fr) if f['kind'] == 'sig')
+    below = [(f['level'] - fr[k]['level'], f['kind'], f['name'],
+              (f['folded'] or {}).get('text'),
+              tuple(e['text'] for e in f['lua']), tuple(f['warnings']))
+             for f in fr[k:]]
+    return below, [(f['name'], f['inline']) for f in fr[:k]], doc['notes']
+
+
 class CrashMixin(object):
+    '''A crash of one workload of crash.lua.  lj-bt at the SIGSEGV has the
+    shape of the workload: FRAMES, the frames from the signal frame on (a
+    prefix), and LUA, all the Lua lines, both regexps ({crash} the path
+    of crash.lua, {NAME} the line of its marker NAME_LINE or NAME); the
+    "!!" of sysprof's stale top_frame: above the top frame by SHIFT
+    slots, or (OVERWRITTEN) at it, a link being written.  A gcore taken
+    right there gives the same lj-bt.'''
     what = None
+    FRAMES = LUA = None
+    SHIFT = (1, 64)
+    OVERWRITTEN = True
+
+    def pattern(self, rx):
+        lines = dict((m, crash_line(m + '_LINE'))
+                     for m in ('TRIGGER', 'JSON', 'SORT', 'MAIN'))
+        lines.update((m, crash_line(m)) for m in ('HANDLE_DEF',
+                                                  'SERIALIZE_DEF'))
+        return rx.format(crash=re.escape(CRASH_LUA), **lines)
 
     @unittest.skipUnless(C.HAS_SYSPROF, C.NO_SYSPROF)
     def test_crash(self):
@@ -124,13 +192,14 @@ class CrashMixin(object):
         for attempt in range(ATTEMPTS):
             wd = C.WorkDir('crash-' + self.what)
             probe = wd.file('probe.jsonl')
+            core = wd.file('core')
             script = C.gdb_prelude() + (
                 'handle SIGPROF nostop noprint pass\n'
                 'run\n'
-                'ljbt-probe {}\n'
-                'kill\n').format(probe)
-            C.run_gdb(wd, script, [os.path.join(C.LUA, 'crash.lua'),
-                                   self.what, str(CRASH_SECS)],
+                'ljbt-probe {} --text\n'
+                'gcore {}\n'
+                'kill\n').format(probe, core)
+            C.run_gdb(wd, script, [CRASH_LUA, self.what, str(CRASH_SECS)],
                       timeout=CRASH_SECS + 120)
             with open(wd.file('gdb.log')) as fh:
                 crashed = re.search(r'received signal SIG(SEGV|BUS|ABRT)',
@@ -145,40 +214,100 @@ class CrashMixin(object):
         self.assertIsNone(rec['error'], rec['error'])
         doc = rec['ljbt']
         self.assertIsNone(C.cframes_mismatch(doc, rec['bt']))
-        w = C.warnings(doc)
-        self.assertTrue(any(re.search(
-            r'sysprof walks .*(slots\)|overwritten)|owns no Lua frame|'
-            r'is not a cframe|broken frame link', x) for x in w), w)
-        self.check_frames(doc)
+        frames = frame_tokens(doc)
+        self.assertIsNotNone(frames, rec['text'])
+        self.assertRegex(frames, '^' + self.pattern(self.FRAMES),
+                         rec['text'])
+        self.assertRegex(lua_text(doc), '^{}$'.format(
+            self.pattern(self.LUA)), rec['text'])
+        sysprof = [m for m in (RX_SYSPROF.fullmatch(n) for n in doc['notes'])
+                   if m]
+        self.assertEqual(len(sysprof), 1, doc['notes'])
+        if sysprof[0].group(2) is None:
+            self.assertTrue(self.OVERWRITTEN, doc['notes'])
+        else:
+            lo, hi = self.SHIFT
+            self.assertGreaterEqual(int(sysprof[0].group(2)), lo,
+                                    doc['notes'])
+            if hi is not None:
+                self.assertLessEqual(int(sysprof[0].group(2)), hi,
+                                     doc['notes'])
+        # The core of the crash, no process: the same lj-bt.
+        self.assertTrue(os.path.exists(core), 'no core')
+        out = wd.file('core-probe.jsonl')
+        rc, text = C.run_gdb(wd, C.gdb_prelude() +
+                             'ljbt-probe {} --text\n'.format(out), [],
+                             core=core)
+        os.unlink(core)
+        dead = C.read_jsonl(out)
+        self.assertEqual(len(dead), 1, text)
+        self.assertIsNone(dead[0]['error'], dead[0]['error'])
+        self.assertIsNone(C.cframes_mismatch(dead[0]['ljbt'], dead[0]['bt']))
+        below, above, notes = from_signal(doc)
+        dbelow, dabove, dnotes = from_signal(dead[0]['ljbt'])
+        self.assertEqual(dbelow, below)
+        self.assertEqual(dnotes, notes)
+        extra = len(dabove) - len(above)
+        self.assertGreaterEqual(extra, 0, (dabove, above))
+        self.assertEqual(dabove[extra:], above)
+        self.assertTrue(all(inline for _, inline in dabove[:extra]), dabove)
         wd.cleanup()
-
-    def check_frames(self, doc):
-        pass
 
 
 class TestCrashTrigger(CrashMixin, unittest.TestCase):
+    # In the C code under lbox_replace (pushing the arguments of the
+    # trigger, port_c_dump_lua, or the tuple it returns): C frames only
+    # below the signal.  cur_L is the fiber of the loop, sysprof's
+    # top_frame a frame of another Lua stack, far off.  Not called from a
+    # trace, space_mt.replace tail-calls lbox_replace (3.3).
     what = 'trigger'
-
-    def check_frames(self, doc):
-        with open(os.path.join(C.LUA, 'crash.lua')) as fh:
-            line = next(i + 1 for i, s in enumerate(fh.read().splitlines())
-                        if 'TRIGGER_LINE' in s)
-        lua = [(e['chunk'], e['currentline']) for e in C.entries(doc)
-               if e['kind'] == 'lua' and e['fkind'] == 'lua']
-        self.assertIn(line, [ln for ch, ln in lua
-                             if ch and ch.endswith('crash.lua')], lua)
+    FRAMES = (r'sig:[^|]*\|(c:[^|]*\|)+c:lbox_replace=lbox_replace\|'
+              r'vm:lj_BC_FUNCC\|c:lua_pcall\|')
+    LUA = (r'(\[lua\] \(tail call from method .replace. = [^|]*\)  '
+           r'\[heuristic\]\|)?'
+           r'\[lua\] {crash}:{TRIGGER} in function <{crash}:\d+>  '
+           r'<called from C: lua_pcall/cpcall>')
+    SHIFT = (1000, None)
+    OVERWRITTEN = False
 
 
 class TestCrashJson(CrashMixin, unittest.TestCase):
+    # Entering or leaving the __serialize of a row (lua_pcall of the
+    # encoder): the VM right below the signal, the frame of __serialize
+    # there or not yet/any more.
     what = 'json'
+    FRAMES = (r'sig:[^|]*\|vm:lj_(vm|BC)_[^|]*\|c:lua_pcall\|'
+              r'c:lua_field_try_serialize\|(c:[^|]*\|)*'
+              r'c:json_encode=json_encode\|vm:lj_BC_FUNCC\|c:lua_pcall\|')
+    LUA = (r'(\[lua\] {crash}:\d+ in function <{crash}:{SERIALIZE_DEF}>'
+           r'  <called from C: lua_pcall/cpcall>\|)?'
+           r'\[lua\] {crash}:{JSON} in function <{crash}:\d+>  '
+           r'<called from C: lua_pcall/cpcall>')
 
 
 class TestCrashNetbox(CrashMixin, unittest.TestCase):
+    # Entering or leaving the function of an iproto call (lua_pcall of
+    # execute_lua_call, its lua_call of handle).
     what = 'netbox'
+    FRAMES = (r'sig:[^|]*\|vm:lj_(vm|BC)_[^|]*\|'
+              r'(c:execute_lua_call=execute_lua_call\|vm:lj_BC_FUNCC\|)?'
+              r'c:lua_pcall\|c:luaT_call\|c:box_process_lua\|'
+              r'c:box_lua_call\|c:box_process_call\|c:tx_process_call\|')
+    LUA = (r'(\[lua\] {crash}:\d+ in function <{crash}:{HANDLE_DEF}>  '
+           r'<called from C: lua_call>)?')
 
 
 class TestCrashSortlong(CrashMixin, unittest.TestCase):
+    # Entering or leaving the comparator (lua_call of sort_comp).
     what = 'sortlong'
+    FRAMES = (r'sig:[^|]*\|vm:lj_(vm|BC)_[^|]*\|c:sort_comp\|'
+              r'(c:(sort_comp|auxsort)\|)*c:lj_cf_table_sort=table\.sort\|'
+              r'vm:lj_BC_FUNCC\|c:lua_pcall\|c:luaT_call\|c:lua_main\|')
+    LUA = (r'(\[lua\] {crash}:{SORT} in function <{crash}:{SORT}>  '
+           r'<called from C: lua_call>\|)?'
+           r'\[lua\] {crash}:{SORT} in function <{crash}:\d+>\|'
+           r'\[lua\] {crash}:{MAIN} in main chunk  '
+           r'<called from C: lua_pcall/cpcall>')
 
 
 for _jit in C.jit_modes():

@@ -245,6 +245,16 @@ def cframes_mismatch(doc, bt):
     return 'lj-bt has {} frames, bt has {}'.format(len(mine), len(theirs))
 
 
+def shape(doc):
+    '''What must not depend on live vs core.'''
+    res = []
+    for f in doc['frames']:
+        res.append((f['level'], f['kind'], f['name'],
+                    (f['folded'] or {}).get('text'),
+                    tuple(e['text'] for e in f['lua'])))
+    return res, [n for n in doc['notes']]
+
+
 def is_subsequence(small, big):
     it = iter(big)
     return all(any(s == b for b in it) for s in small)

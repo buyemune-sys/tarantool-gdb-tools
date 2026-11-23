@@ -17,7 +17,7 @@ box.schema.user.grant('guest', 'super', nil, nil, {if_not_exists = true})
 local s = box.schema.space.create('t', {if_not_exists = true})
 s:create_index('pk', {if_not_exists = true})
 
-function _G.handle(id, payload)
+function _G.handle(id, payload)  -- HANDLE_DEF
   local t = {id = id, payload = payload, ts = clock.time()}
   return t.id, #t.payload
 end
@@ -52,7 +52,7 @@ function W.trigger()
 end
 
 function W.json()
-  local mt = {__serialize = function(self)
+  local mt = {__serialize = function(self)  -- SERIALIZE_DEF
     return {id = self.id, name = self.name}
   end}
   fiber.create(function()
@@ -60,7 +60,7 @@ function W.json()
     while clock.monotonic() < deadline do
       local rows = {}
       for k = 1, 50 do rows[k] = setmetatable({id = k, name = 'n' .. k}, mt) end
-      json.encode(rows)
+      json.encode(rows)  -- JSON_LINE
       i = i + 1
       if i % 100 == 0 then fiber.yield() end
     end
@@ -71,13 +71,13 @@ function W.sortlong()
   local t = {}
   while clock.monotonic() < deadline do
     for i = 1, 200000 do t[i] = (i * 7919) % 200003 end
-    table.sort(t, function(a, b) return a < b end)
+    table.sort(t, function(a, b) return a < b end)  -- SORT_LINE
   end
 end
 
 assert(misc.sysprof.start({mode = 'C', interval = 10,
                            path = workdir .. '/cpu.bin'}))
-W[what]()
+W[what]()  -- MAIN_LINE
 while clock.monotonic() < deadline do fiber.sleep(0.5) end
 misc.sysprof.stop()
 print('survived', what)
