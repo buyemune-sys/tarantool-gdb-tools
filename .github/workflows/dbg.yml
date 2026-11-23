@@ -1,0 +1,102 @@
+name: dbg
+
+# The universal luajit_dbg.py against the official static builds (they
+# carry DWARF) of every Tarantool CE 3.x minor, 3.0 to 3.9, last patch
+# of each: tests/dbg (every command live and on a gcore core) and the
+# vendored LuaJIT debugger tests.  The latter also run with the
+# extension of each release, for information: what they fail there is
+# what the universal file fixes.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '43 2 * * *'
+  # A manual run can pick one version and/or one architecture.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tarantool version, or "all"'
+        default: all
+        type: choice
+        options: [all, 3.0.2, 3.1.2, 3.2.4, 3.3.5, 3.4.2, 3.5.2, 3.6.4, 3.7.2, 3.8.2, 3.9.0]
+      arch:
+        description: 'Architecture, or "all"'
+        default: all
+        type: choice
+        options: [all, amd64, arm64]
+
+permissions:
+  contents: read
+
+jobs:
+  dbg:
+    name: tarantool ${{ matrix.version }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    # Never run on arm64 before this CI (dual-number LuaJIT, other
+    # registers): report, do not fail the workflow, until it is green.
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON((inputs.version || 'all') == 'all' && '["3.0.2", "3.1.2", "3.2.4", "3.3.5", "3.4.2", "3.5.2", "3.6.4", "3.7.2", "3.8.2", "3.9.0"]' || format('["{0}"]', inputs.version)) }}
+        arch: ${{ fromJSON((inputs.arch || 'all') == 'all' && '["amd64", "arm64"]' || format('["{0}"]', inputs.arch)) }}
+    env:
+      DBG_KEEP: 1
+      # The same download as test.yml: the cache is shared.
+      DL: ${{ github.workspace }}/.ljbt-dl/${{ matrix.version }}-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gdb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+          gdb --version | head -1
+
+      - name: Cache the Tarantool build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DL }}
+          key: tarantool-${{ matrix.version }}-${{ matrix.arch }}-v1
+
+      - name: Fetch Tarantool ${{ matrix.version }} and its gdb extensions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tests/fetch.sh ${{ matrix.version }} ${{ matrix.arch }} "$DL" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}/dbg" >> "$GITHUB_ENV"
+          mkdir -p "${{ runner.temp }}/dbg"
+
+      - name: luajit_dbg.py tests
+        run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: LuaJIT's debugger tests
+        run: tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      # For information: the extension of the release itself
+      # (luajit-gdb.py up to 3.5, luajit_dbg.py from 3.6).
+      - name: LuaJIT's debugger tests with the extension of ${{ matrix.version }}
+        continue-on-error: true
+        run: |
+          DBG_LUAJIT_DBG=$LJBT_LUAJIT_DBG tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream-orig.log"
+          rc=${PIPESTATUS[0]}
+          {
+            echo "### LuaJIT's debugger tests, $(basename "$LJBT_LUAJIT_DBG") of ${{ matrix.version }} ${{ matrix.arch }}"
+            echo '```'
+            grep -E '^(FAIL|ERROR):|^Ran |^OK|^FAILED' "$TMPDIR/run-upstream-orig.log" | grep -v deferred
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+        shell: bash
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dbg-logs-${{ matrix.version }}-${{ matrix.arch }}
+          # The plans, results and gdb logs of every scenario.
+          path: ${{ runner.temp }}/dbg
+          retention-days: 14
