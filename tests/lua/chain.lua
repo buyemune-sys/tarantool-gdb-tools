@@ -64,6 +64,42 @@ local function append(file, rec)
   fh:close()
 end
 
+-- The snapshots of the trace of the last numeric for loop of fn (the D of
+-- its JFORL), as LuaJIT's own jit.util.tracesnap gives them: for each, the
+-- snapshot entries ((slot << 24) + flags + ref; SNAP_FRAME = 0x10000).
+-- Written to snaps.jsonl, after the stop: what the snapshot lj-bt picks
+-- holds, independently of lj-bt's reading of the snapshot map.
+function H.snaps(seq, fn)
+  local tr
+  local pc = 1
+  while true do
+    local ins = jutil.funcbc(fn, pc)
+    if ins == nil then break end
+    local op = bit.band(ins, 0xff)
+    local name = vmdef.bcnames:sub(op * 6 + 1, op * 6 + 6):match('%S+')
+    if name == 'FORL' or name == 'IFORL' then tr = nil end
+    if name == 'JFORL' then tr = bit.rshift(ins, 16) end
+    pc = pc + 1
+  end
+  local snaps = {}
+  if tr ~= nil then
+    local sn = 0
+    while true do
+      local s = jutil.tracesnap(tr, sn)
+      if s == nil then break end
+      local ents = {}
+      local k = 2
+      while s[k] ~= nil and s[k] ~= s[#s] do
+        ents[#ents + 1] = s[k]
+        k = k + 1
+      end
+      snaps[#snaps + 1] = ents
+      sn = sn + 1
+    end
+  end
+  append('snaps.jsonl', {seq = seq, trace = tr, snaps = snaps})
+end
+
 -- The Lua chain as LuaJIT itself sees it (levels from the caller up to
 -- the bottom of the current coroutine).
 function H.oracle(seq)

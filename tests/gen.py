@@ -239,6 +239,7 @@ class Program(object):
                 s = e('      r = {}(args[i])'.format(N))
                 e('    end')
                 e('  until args[100] == x')
+                e('  H.snaps({}, {})'.format(ch.seq, F))
                 e('  return r')
             elif t == 'jit':
                 # NAMES[2000] and NAMES[4000 + seq] are both in the hash

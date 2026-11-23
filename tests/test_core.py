@@ -9,6 +9,7 @@
 # unwinder builds the state of the stopped one again.
 
 import os
+import re
 import unittest
 
 import common as C
@@ -70,6 +71,46 @@ class CoreMixin(object):
         # What the HOP tests rely on.
         rec = self.live(HOP)
         self.assertEqual(self.in_trace(rec), self.jit == 'on')
+
+    def test_hop_snapshot_frames(self):
+        # The inlined frames of the HOP stop are those of the snapshot lj-bt
+        # picks as LuaJIT's own jit.util.tracesnap has it (H.snaps): no
+        # more, no less.  HOP calls F7_0 (loop) -> F7_1 -> F7_2 -> FFI,
+        # all in one trace, and shows only F7_0, at the line of its call:
+        # that is LuaJIT, not lj-bt.  No guard of the trace needs a
+        # snapshot inside F7_1 or F7_2 (an exit there may redo the
+        # iteration from snapshot #0, at the loop head), and the one that
+        # covers the return address of the call (lj_trace_unwind's pick)
+        # is taken after it, when both have returned.  No snapshot of the
+        # trace has a frame of either, so nothing could show them.
+        if self.jit != 'on':
+            self.skipTest('JIT is off')
+        rec = self.live(HOP)
+        m = re.search(r'\[trace (\d+)\].*  snapshot #(\d+)', rec['text'])
+        self.assertIsNotNone(m, rec['text'])
+        tno, sn = int(m.group(1)), int(m.group(2))
+        snaps = [r for r in C.read_jsonl(self.wd.file('snaps.jsonl'))
+                 if r['seq'] == HOP]
+        self.assertEqual(len(snaps), 1, snaps)
+        self.assertEqual(snaps[0]['trace'], tno)
+        fr2 = 1 if C.IS_GC64 else 0
+
+        def frames(ents):
+            return [e for e in ents if e & 0x10000 and not e & 0x20000 and
+                    (e >> 24) & 0xff > fr2]
+        theirs = frames(snaps[0]['snaps'][sn])
+        tf = next(f for f in rec['ljbt']['frames'] if f['kind'] == 'trace')
+        mine = [e for e in tf['lua'] if e.get('inlined')]
+        self.assertEqual(len(mine), len(theirs), (mine, theirs))
+        self.assertEqual(sum(len(frames(s)) for s in snaps[0]['snaps']), 0,
+                         snaps[0])
+        # The base frame: F7_0 at the line of the call.
+        ch = self.chains[HOP - 1]
+        base = next(e for e in C.entries(rec['ljbt'])
+                    if 'base frame' in (e.get('note') or ''))
+        exp = next(t for t in ch.model if t[0] == 'L' and
+                   t[1] == min(ch.deflines))
+        self.assertEqual(('L', base['defline'], base['currentline']), exp)
 
     def test_core_equals_live(self):
         for ch in self.chains:
