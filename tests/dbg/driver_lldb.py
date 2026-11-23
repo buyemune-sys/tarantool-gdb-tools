@@ -504,9 +504,14 @@ class Driver(object):
 
     def enum_check(self):
         '''dbg-enum-check of enumcheck.py.'''
-        m = sys.modules.get('luajit_dbg')
-        if m is None:
-            raise Error('luajit_dbg is not loaded')
+        # lldb names a module after its file: look for the extension by
+        # what it has, the file may be named otherwise.
+        mods = [m for m in list(sys.modules.values())
+                if getattr(m, 'ENUM_FALLBACK', None) is not None and
+                getattr(m, 'EnumBasedList', None) is not None]
+        if not mods:
+            raise Error('luajit_dbg.py is not loaded')
+        m = mods[-1]
         out = {}
         for v in vars(m).values():
             if not isinstance(v, m.EnumBasedList):

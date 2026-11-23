@@ -7,7 +7,11 @@
 # at hand: debug.getinfo for functions and frames, jit.bc for bytecode,
 # jit.dump for trace IR, gdb expressions for addresses and fields.
 
+import atexit
+import os
 import re
+import shutil
+import tempfile
 import unittest
 
 import harness as H
@@ -83,9 +87,20 @@ DEFERRED = Scenario('deferred', QUIET_GC + 'print(1)\n',
                     [('arch', 'lj-arch'), ('state', 'lj-state')],
                     deferred=True)
 
+# The extension under another file name, luajit-gdb.py of the release
+# or a rename: lldb names its module after the file.  A link made once.
+_LINKS = tempfile.mkdtemp(prefix='dbg-links-')
+atexit.register(shutil.rmtree, _LINKS, True)
+RENAMED_DBG = os.path.join(_LINKS, 'luajit_gdb.py')
+os.symlink(os.path.abspath(H.LUAJIT_DBG), RENAMED_DBG)
+RENAMED = Scenario('renamed', QUIET_GC + 'print(1)\n', ['break lj_cf_print'],
+                   [('arch', 'lj-arch'), ('state', 'lj-state'),
+                    ('check', 'dbg-enum-check')],
+                   sources=[RENAMED_DBG, H.ENUMCHECK])
+
 
 class TestLoad(DbgCase):
-    SCENARIOS = (BASIC, DEFERRED)
+    SCENARIOS = (BASIC, DEFERRED, RENAMED)
 
     def check_load(self, text):
         lines = [s for s in text.split('\n') if s]
@@ -114,6 +129,16 @@ class TestLoad(DbgCase):
         self.assertEqual(self.out(DEFERRED, 'state'),
                          self.out(BASIC, 'state'))
         self.assertNoPyError(DEFERRED)
+
+    def test_renamed(self):
+        for mode in RENAMED.modes():
+            res = self.result(RENAMED, mode)
+            self.assertEqual(res['load_err'], [])
+            self.check_load(res['load'])
+        for key in ('arch', 'state'):
+            self.assertEqual(self.out(RENAMED, key), self.out(BASIC, key))
+        self.assertIn('BC__MAX', self.out(RENAMED, 'check'))
+        self.assertNoPyError(RENAMED)
 
     def test_missing_arg(self):
         for c in ARG_COMMANDS:

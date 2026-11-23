@@ -872,9 +872,11 @@ class _LLDBDebugger(Debugger):
 
     def register_command(self, command, name):
         command.name = name
+        # lldb names the module after the file it imports.
         lldb.debugger.HandleCommand(
-            'command script add {o} --class luajit_dbg.{cls} {cmd}'.format(
+            'command script add {o} --class {mod}.{cls} {cmd}'.format(
                 o='--overwrite' if self.version >= 14 else '',
+                mod=__name__,
                 cls=command.__name__,
                 cmd=name,
             )
