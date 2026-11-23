@@ -2815,10 +2815,11 @@ def tls_arch():
 def tls_base():
     """The thread pointer of the selected thread, as a 'char *'."""
     # gdb names the AArch64 one tpidr; tpidr_el0 is for an older name.
+    arch_id = tls_arch()
     exprs = {
         arch_id_x86_64: ["$fs_base"],
         arch_id_aarch64: ["$tpidr", "$tpidr_el0"],
-    }[tls_arch()]
+    }[arch_id]
     for expr in exprs:
         try:
             base = gdb.parse_and_eval(expr)
@@ -2828,7 +2829,36 @@ def tls_base():
         if base.type.code != gdb.TYPE_CODE_VOID:
             return base.cast(gdb.lookup_type('long')).cast(
                 gdb.lookup_type('char').pointer())
-    raise gdb.GdbError("tls_base: no {} in this thread".format(' or '.join(exprs)))
+    base = tls_base_by_thread_handle(arch_id)
+    if base is not None:
+        return base
+    raise gdb.GdbError("tls_base: no {} in this thread, and no thread handle of "
+                       "libthread_db".format(' or '.join(exprs)))
+
+
+def tls_base_by_thread_handle(arch_id):
+    """The thread pointer of the selected thread, from its glibc thread
+    descriptor, for a gdb with no register for it: gdb 12 on AArch64 (the
+    tpidr register came in gdb 13).  The thread handle of libthread_db is
+    the pthread_t, the address of the descriptor (struct pthread);
+    libthread_db maps the thread pointer to it the way glibc says
+    (DB_THREAD_SELF in its tls.h).  On x86-64 the descriptor is at the
+    thread pointer (TLS variant II); on AArch64 it ends there and starts
+    _thread_db_const_thread_area bytes below, sizeof (struct pthread)
+    (gdb's aarch64_ps_get_thread_area subtracts that from TPIDR_EL0).
+    None without libthread_db or that variable."""
+    try:
+        handle = gdb.selected_thread().handle()
+        base = gdb.Value(handle, gdb.lookup_type('char').pointer())
+    except (gdb.error, RuntimeError, TypeError, ValueError):
+        return None
+    if arch_id == arch_id_aarch64:
+        try:
+            base += int(gdb.parse_and_eval(
+                '*(unsigned int *)&_thread_db_const_thread_area'))
+        except gdb.error:
+            return None
+    return base
 
 
 def tls_below_base():

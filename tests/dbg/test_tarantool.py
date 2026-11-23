@@ -10,8 +10,10 @@
 # the stop in lj_cf_print they are the arguments of the C function:
 # L->base[i].
 
+import functools
 import os
 import re
+import subprocess
 import unittest
 
 import harness as H
@@ -20,7 +22,41 @@ from harness import DbgCase, Scenario, gcval
 ORACLE_TT = os.path.join(H.HERE, 'oracle_tt.py')
 SOURCES = [H.TT_GDB, ORACLE_TT]
 # The thread pointer as gdb names the register (TPIDR_EL0 is $tpidr).
-TLS_BASE = '$tpidr' if H.ARCH == 'arm64' else '$fs_base'
+# gdb 12 has none on AArch64 (the tpidr register came in gdb 13): there
+# the tests take the one of tarantool_gdb.py, from the thread handle,
+# which TestNoThreadPointer checks against the TLS ABI.
+TP_REGISTER = '$fs_base' if H.ARCH != 'arm64' else \
+    '$tpidr' if H.GDB_VERSION >= (13, 0) else None
+TLS_BASE = TP_REGISTER or '$tl_var_addr(0)'
+
+
+@functools.lru_cache(maxsize=None)
+def tls_abi_offset(name):
+    '''The offset from the thread pointer of the thread-local variable
+    name of the tarantool executable, where the TLS ABI puts the TLS
+    block of the executable, the first one: below the thread pointer on
+    x86-64 (variant II: st_value - roundup(p_memsz, p_align) of PT_TLS),
+    above it on AArch64, after the 16-byte TCB (variant I: roundup(16,
+    p_align) + st_value).  The linker computes the same for the local-exec
+    accesses of the executable.'''
+    def readelf(*args):
+        return subprocess.run(['readelf', '-W'] + list(args) + [H.TARANTOOL],
+                              stdout=subprocess.PIPE, check=True,
+                              universal_newlines=True).stdout
+    m = re.search(r'^\s*TLS\s+0x[0-9a-f]+\s+(0x[0-9a-f]+)\s+0x[0-9a-f]+\s+'
+                  r'0x[0-9a-f]+\s+(0x[0-9a-f]+)\s.*\s(0x[0-9a-f]+)$',
+                  readelf('-l'), re.M)
+    vaddr, memsz, align = (int(x, 16) for x in m.groups())
+    assert vaddr % align == 0, 'PT_TLS at {:#x}, align {:#x}'.format(
+        vaddr, align)
+    m = re.search(r'^\s*\d+:\s+([0-9a-f]+)\s+\d+\s+TLS\s+\S+\s+\S+\s+\S+\s+'
+                  r'{}$'.format(re.escape(name)), readelf('-s'), re.M)
+    st_value = int(m.group(1), 16)
+
+    def up(n):
+        return (n + align - 1) // align * align
+    return up(16) + st_value if H.ARCH == 'arm64' else st_value - up(memsz)
+
 
 COMMANDS = ['info tt-fibers', 'tt-fiber', 'tt-list', 'tt-list-walk',
             'tt-mp']
@@ -291,6 +327,29 @@ NOTLS = BOX.variant('box-notls', sources=[H.HIDE_ENUMS] + SOURCES,
                          .format(TLS_BASE)),
                     ])
 
+# The same with gdb unable to read the thread pointer either, as gdb 12
+# on AArch64: tarantool_gdb.py takes it from the thread handle.  The
+# names are hidden from what it evaluates, not from the commands of the
+# tests (`output cord_ptr`, `(long)&cord_ptr`).
+NOTP = BOX.variant('box-notp', sources=[H.HIDE_ENUMS] + SOURCES,
+                   gdb_env={'DBG_HIDE_ENUMS': NOTLS_HIDDEN +
+                            ',$fs_base,$tpidr,$tpidr_el0'},
+                   cmds=[
+                       ('tl.offset', 'print $tl_var_find_offset(&main_cord)'),
+                       ('tl.addr', 'print $tl_var_addr('
+                        '$tl_var_find_offset(&main_cord))'),
+                       ('tl.addr.gdb', 'eval:(long)&cord_ptr'),
+                       ('tl.threads',
+                        'dbg-threads output $tl_var_like(&main_cord)'),
+                       ('tl.threads.gdb', 'dbg-threads output cord_ptr'),
+                       ('tp', 'dbg-threads output (long)$tl_var_addr(0)'),
+                       ('tp.cord_ptr', 'dbg-threads output (long)&cord_ptr'),
+                       ('threads.fibers', 'dbg-threads info tt-fibers'),
+                       ('threads.tp', 'dbg-threads output *(long *){}'
+                        .format(TLS_BASE)),
+                   ] + ([('tp.reg', 'dbg-threads output (long){}'.format(
+                       TP_REGISTER))] if TP_REGISTER else []))
+
 # Without a value or a type some printers need (a clang build may leave
 # out an enum used only through its constants).
 NODWARF = BOX.variant('box-nodwarf', sources=[H.HIDE_ENUMS] + SOURCES,
@@ -533,7 +592,10 @@ class TestThreadLocal(DbgCase):
 
     def test_find_offset(self):
         # The offset of cord_ptr, the variable that holds &main_cord in
-        # the main thread; nothing else printed.
+        # the main thread; nothing else printed.  Where the TLS ABI puts
+        # it, and where gdb's own lookup finds it from the thread pointer.
+        self.assertEqual(value(self.out(BOX, 'tl.offset')),
+                         str(tls_abi_offset('cord_ptr')))
         self.assertEqual(value(self.out(BOX, 'tl.offset')),
                          str(self.value(BOX, 'tl.offset.gdb')))
         self.assertRegex(self.out(BOX, 'tl.offset'), r'^\$\d+ = -?\d+\n$')
@@ -602,6 +664,57 @@ class TestNoTLS(DbgCase):
             self.value(NOTLS, 'tuple.format_id')), out)
         self.assertTrue(out.endswith('data = {}}}'.format(
             mp_text(NOTLS.oracle()['tuple']))), out[-300:])
+
+
+class TestNoThreadPointer(DbgCase):
+    '''gdb cannot read the thread pointer (gdb 12 on AArch64, cores.yml
+    run 45154577020): tarantool_gdb.py takes it from the thread handle of
+    libthread_db, and the thread-local functions work as with it.'''
+    SCENARIOS = (BOX, NOTP)
+
+    def test_thread_pointer(self):
+        # In every thread cord_ptr is where the TLS ABI puts it from that
+        # thread pointer (gdb's own lookup, live), and the thread pointer
+        # is the register where gdb has one, live and on the core.
+        off = tls_abi_offset('cord_ptr')
+        tp = per_thread(self.raw(NOTP, 'tp', 'live')['out'])
+        cord = per_thread(self.raw(NOTP, 'tp.cord_ptr', 'live')['out'])
+        self.assertGreater(len(tp), 2)
+        self.assertEqual(sorted(tp), sorted(cord))
+        for rank, s in tp.items():
+            self.assertNotIn('!error', s, rank)
+            self.assertEqual(int(s) + off, int(cord[rank]), rank)
+        got = thread_outs(self, NOTP, 'tp')
+        if TP_REGISTER:
+            for mode, outs in got:
+                self.assertEqual(outs, per_thread(
+                    self.raw(NOTP, 'tp.reg', mode)['out']), mode)
+
+    def test_functions(self):
+        self.assertEqual(value(self.out(NOTP, 'tl.offset')),
+                         str(tls_abi_offset('cord_ptr')))
+        self.assertEqual(value(self.out(NOTP, 'tl.addr')),
+                         '(void *) 0x{:x}'.format(
+                             self.value(NOTP, 'tl.addr.gdb')))
+        want = per_thread(self.raw(NOTP, 'tl.threads.gdb', 'live')['out'])
+        self.assertGreater(len(want), 2)
+        for mode, got in thread_outs(self, NOTP, 'tl.threads'):
+            for rank, s in got.items():
+                self.assertEqual(re.sub(r'^\(.*?\) ', '', s),
+                                 re.sub(r'^\(.*?\) ', '', want[rank]),
+                                 (mode, rank))
+        self.assertNoPyError(NOTP)
+
+    def test_threads(self):
+        want = dict((r, [(f, n) for _, f, n, _ in fiber_rows(s)])
+                    for r, s in per_thread(self.raw(
+                        BOX, 'threads.fibers', 'live')['out']).items())
+        for mode, got in thread_outs(self, NOTP, 'threads.fibers'):
+            for rank, text in got.items():
+                self.assertNotIn('!error', text, (mode, rank))
+                self.assertEqual([(f, n) for _, f, n, _ in fiber_rows(text)],
+                                 want[rank], (mode, rank))
+
 
 class TestTuple(DbgCase):
     SCENARIOS = (BOX,)

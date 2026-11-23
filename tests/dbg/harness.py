@@ -153,6 +153,22 @@ VERSION = _abi[2]               # 3.9.0-0-g...
 VERSION_TUPLE = tuple(int(x) for x in VERSION.split('-')[0].split('.'))
 
 
+def gdb_version():
+    '''(major, minor) of the gdb of the tests: the first number of
+    `gdb --version`, "GNU gdb (Ubuntu 12.1-0ubuntu1~22.04.2) 12.1".'''
+    p = subprocess.run([GDB, '--version'], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                       universal_newlines=True, timeout=60)
+    m = re.search(r'(\d+)\.(\d+)', p.stdout.split('\n')[0])
+    if m is None:
+        raise RuntimeError('no version in `{} --version`: {}'.format(
+            GDB, p.stdout[:200]))
+    return int(m.group(1)), int(m.group(2))
+
+
+GDB_VERSION = gdb_version()
+
+
 def mref(expr, tp):
     '''mref() of lj_obj.h as a gdb expression: no macros in the DWARF.'''
     return '(({} *)({}).ptr{})'.format(tp, expr, 64 if IS_GC64 else 32)
