@@ -1901,8 +1901,9 @@ def ljbt_render_links(seg, top_pc, out):
         tail, why = [], None
         if seg.L.broken is None and not LJBT_OPTS.get('no_tail'):
             # Silent on an inconsistent stack: any read error -> nothing.
+            # The call site is that of the call link (a vararg frame's).
             try:
-                tail, why = ljbt_tailcall_lines(link, fn)
+                tail, why = ljbt_tailcall_lines(call, fn)
             except (gdb.error, ValueError, IndexError, KeyError,
                     RuntimeError):
                 tail, why = [], None
