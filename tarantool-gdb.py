@@ -1412,7 +1412,23 @@ class TuplePrinter(object):
     tuple_formats_sym = gdb.lookup_global_symbol('tuple_formats')
     if not tuple_formats_sym:
         raise NameError('tuple_formats is missing')
-    tuple_formats = tuple_formats_sym.value()
+
+    @staticmethod
+    def tuple_formats():
+        """tuple_formats, read when a tuple is printed: since 3.7 it is a
+        thread-local pointer, which gdb cannot read before there is a
+        process, and which is NULL in a thread with no tuples of its own
+        (WAL, iproto, coio): then it is the one of the main thread."""
+        formats = ThreadLocal('tuple_formats').value()
+        if formats.type.strip_typedefs().code == gdb.TYPE_CODE_PTR and \
+                int(formats) == 0:
+            main = main_thread()
+            if main is not None and main != gdb.selected_thread():
+                with SelectedThread():
+                    main.switch()
+                    formats = ThreadLocal('tuple_formats').value()
+                    formats.fetch_lazy()
+        return formats
 
     ptr_char = gdb.lookup_type('char').pointer()
     ptr_int32 = gdb.lookup_type('int32_t').pointer()
@@ -1428,7 +1444,7 @@ class TuplePrinter(object):
         return self.support_compact and self.val['data_offset_bsize_raw'] & 0x8000
 
     def format(self): # tuple_format
-        return self.tuple_formats[self.val['format_id']].dereference()
+        return self.tuple_formats()[self.val['format_id']].dereference()
 
     def data_offset(self): # tuple_data_offset
         # prior to introducing of compact mode data offset was just stored
@@ -2731,6 +2747,16 @@ class SelectedThread(object):
         return False
 
 
+def main_thread():
+    """The main thread: the one whose LWP is the process id."""
+    inferior = gdb.selected_inferior()
+    threads = sorted(inferior.threads(), key=lambda t: t.num)
+    for t in threads:
+        if t.ptid[1] == inferior.pid:
+            return t
+    return threads[0] if threads else None
+
+
 def threads_from_selected():
     """The threads, the selected one first."""
     cur = gdb.selected_thread()
@@ -3004,6 +3030,9 @@ class ThreadLocal(object):
             sym = gdb.lookup_static_symbol(self.name)
         if sym is None:
             raise gdb.GdbError("No symbol \"{}\"".format(self.name))
+        if self.block_offset(self.name) is None:
+            # Not a thread-local one (tuple_formats before 3.7).
+            return sym.value()
         return cast_ptr(sym.type, tls_base(), self.offset()).dereference()
 
     def offset(self):

@@ -201,6 +201,7 @@ BOX_CMDS = [
     ('threads.fibers', 'dbg-threads info tt-fibers'),
     ('threads.cord', 'dbg-threads output cord_ptr->name'),
     ('threads.alive', 'dbg-threads output $dbg_rlist_len(&cord_ptr->alive)'),
+    ('threads.tuple', 'dbg-threads output *$t'),
     # The fiber switch, last: it changes what the commands see.
     ('sleeper', 'eval "tt-fiber %d", $dbg_fiber_id("tt-sleeper")'),
     ('sleeper.fibers', 'info tt-fibers'),
@@ -573,6 +574,15 @@ class TestTuple(DbgCase):
             self.value(BOX, 'tuple.flags')))
         self.assertTrue(out.endswith(
             'data = {}}}'.format(mp_text(o['tuple']))), out[-300:])
+
+    def test_threads(self):
+        # The same tuple from every thread: since 3.7 tuple_formats is
+        # thread-local, NULL where there are no tuples (WAL, iproto...).
+        want = value(self.out(BOX, 'tuple'))
+        for mode, got in thread_outs(self, BOX, 'threads.tuple'):
+            self.assertGreater(len(got), 0, mode)
+            for rank, s in got.items():
+                self.assertEqual(s.strip(), want, (mode, rank))
 
     def test_format_token(self):
         # The JSON tree of the format: one child per field of the space.
