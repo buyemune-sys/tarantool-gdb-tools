@@ -8,12 +8,16 @@
 # carries .debug_info).  luajit_dbg.py (luajit-gdb.py before LuaJIT
 # 5db8c217) comes from tarantool/luajit at the commit of the
 # third_party/luajit submodule of the tag, tools/tarantool-gdb.py from
-# the tag.  Prints the three variables for the tests, ready for
-# `export` or $GITHUB_ENV:
+# the tag; they keep the names of the release.  Prints the three
+# variables for the tests, ready for `export` or $GITHUB_ENV:
 #
 #   LJBT_TARANTOOL=<dest>/usr/bin/tarantool
-#   LJBT_LUAJIT_DBG=<dest>/luajit_dbg.py
-#   LJBT_TT_GDB=<dest>/tarantool-gdb.py
+#   LJBT_RELEASE_LUAJIT_DBG=<dest>/luajit_dbg.py
+#   LJBT_RELEASE_TT_GDB=<dest>/tarantool-gdb.py
+#
+# The tests run luajit_gdb.py and tarantool_gdb.py of this repo; the
+# extensions of the release are for the runs that compare with them
+# (LJBT_LUAJIT_DBG=$LJBT_RELEASE_LUAJIT_DBG tests/run.sh ...).
 #
 # Already fetched files are kept.  GITHUB_TOKEN, if set, authorizes the
 # GitHub API call; LJBT_TARANTOOL_GIT and LJBT_LUAJIT_GIT, if set, are
@@ -87,5 +91,5 @@ fi
 
 log "$ver $arch: LuaJIT $lj, $(basename "$ext")"
 echo "LJBT_TARANTOOL=$bin"
-echo "LJBT_LUAJIT_DBG=$ext"
-echo "LJBT_TT_GDB=$dest/tarantool-gdb.py"
+echo "LJBT_RELEASE_LUAJIT_DBG=$ext"
+echo "LJBT_RELEASE_TT_GDB=$dest/tarantool-gdb.py"

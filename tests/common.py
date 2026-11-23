@@ -2,10 +2,12 @@
 #
 # Environment:
 #   LJBT_TARANTOOL   tarantool binary with DWARF (required)
-#   LJBT_LUAJIT_DBG  the LuaJIT extension: luajit_dbg.py of the same build
-#                    (required)
-#   LJBT_TT_GDB      the Tarantool extension: tools/tarantool-gdb.py
-#                    (optional: fiber tests)
+#   LJBT_LUAJIT_DBG  the LuaJIT extension (default: luajit_gdb.py of this
+#                    repo); the luajit_dbg.py or luajit-gdb.py of the
+#                    build works too, as tests/fetch.sh prints it
+#   LJBT_TT_GDB      the Tarantool extension (default: tarantool_gdb.py
+#                    of this repo); tools/tarantool-gdb.py of the build
+#                    works too; empty: none, the fiber tests are skipped
 #   LJBT_SEEDS       layer 2: number of random chains (default 200)
 #   LJBT_SEED0       layer 2: first seed (default 1)
 #   LJBT_STOPS       layer 3: number of random stops (default 500)
@@ -34,13 +36,15 @@ PROBE = os.path.join(TESTS, 'probe.py')
 CLI_GDB = os.path.join(TESTS, 'cli_gdb.py')
 
 TARANTOOL = os.environ.get('LJBT_TARANTOOL')
-LUAJIT_DBG = os.environ.get('LJBT_LUAJIT_DBG')
-TT_GDB = os.environ.get('LJBT_TT_GDB')
+LUAJIT_DBG = os.environ.get('LJBT_LUAJIT_DBG') or \
+    os.path.join(ROOT, 'luajit_gdb.py')
+TT_GDB = os.environ.get('LJBT_TT_GDB',
+                        os.path.join(ROOT, 'tarantool_gdb.py')) or None
 VERBOSE = bool(os.environ.get('LJBT_VERBOSE'))
 KEEP = bool(os.environ.get('LJBT_KEEP'))
 
-if not TARANTOOL or not LUAJIT_DBG:
-    raise RuntimeError('set LJBT_TARANTOOL and LJBT_LUAJIT_DBG')
+if not TARANTOOL:
+    raise RuntimeError('set LJBT_TARANTOOL')
 
 
 def env_int(name, default):

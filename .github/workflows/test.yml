@@ -2,7 +2,9 @@ name: test
 
 # lj-bt against the official static builds (they carry DWARF) of every
 # Tarantool CE minor that tt v3 supports, 3.3 to 3.9, last patch of each,
-# with the gdb extensions of the same sources (tests/fetch.sh).
+# after luajit_gdb.py and tarantool_gdb.py of this repo; the oracle,
+# core and cli layers once more with the gdb extensions of the release
+# (tests/fetch.sh), which lj-bt works with too.
 on:
   push:
   pull_request:
@@ -128,6 +130,18 @@ jobs:
 
       - name: Layer rust
         run: tests/run.sh rust 2>&1 | tee "$TMPDIR/run-rust.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      # The steps above run after luajit_gdb.py and tarantool_gdb.py of
+      # this repo; lj-bt keeps working after the extensions of each
+      # release too.  Whatever the steps above did.
+      - name: Layers oracle, core, cli with the extensions of ${{ matrix.version }}
+        if: ${{ !cancelled() }}
+        run: |
+          echo "$(basename "$LJBT_RELEASE_LUAJIT_DBG"), $(basename "$LJBT_RELEASE_TT_GDB") of ${{ matrix.version }}"
+          LJBT_LUAJIT_DBG=$LJBT_RELEASE_LUAJIT_DBG LJBT_TT_GDB=$LJBT_RELEASE_TT_GDB \
+            tests/run.sh oracle core cli 2>&1 | tee "$TMPDIR/run-release.log"
+          exit "${PIPESTATUS[0]}"
         shell: bash
 
       - name: Upload logs

@@ -83,10 +83,10 @@ jobs:
       - name: LuaJIT's debugger tests with the extension of ${{ matrix.version }}
         continue-on-error: true
         run: |
-          DBG_LUAJIT_DBG=$LJBT_LUAJIT_DBG tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream-orig.log"
+          DBG_LUAJIT_DBG=$LJBT_RELEASE_LUAJIT_DBG tests/dbg/run.sh upstream 2>&1 | tee "$TMPDIR/run-upstream-orig.log"
           rc=${PIPESTATUS[0]}
           {
-            echo "### LuaJIT's debugger tests, $(basename "$LJBT_LUAJIT_DBG") of ${{ matrix.version }} ${{ matrix.arch }}"
+            echo "### LuaJIT's debugger tests, $(basename "$LJBT_RELEASE_LUAJIT_DBG") of ${{ matrix.version }} ${{ matrix.arch }}"
             echo '```'
             grep -E '^(FAIL|ERROR):|^Ran |^OK|^FAILED' "$TMPDIR/run-upstream-orig.log" | grep -v deferred
             echo '```'
@@ -110,7 +110,7 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
-          DBG_TT_GDB=$LJBT_TT_GDB tests/dbg/run.sh upstream-tarantool 2>&1 | tee "$TMPDIR/run-upstream-tarantool-orig.log"
+          DBG_TT_GDB=$LJBT_RELEASE_TT_GDB tests/dbg/run.sh upstream-tarantool 2>&1 | tee "$TMPDIR/run-upstream-tarantool-orig.log"
           rc=${PIPESTATUS[0]}
           {
             echo "### tarantool's gdb tests, tarantool-gdb.py of ${{ matrix.version }} ${{ matrix.arch }}"

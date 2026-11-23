@@ -22,14 +22,18 @@
 # LJBT_LJ_BT runs the tests against another luajit_backtrace_gdb.py (an
 # older one, to see a new test fail before its fix).
 #
-# Environment (see tests/common.py): LJBT_TARANTOOL and LJBT_LUAJIT_DBG are
-# required; LJBT_TT_GDB, LJBT_SEEDS, LJBT_SEED0, LJBT_STOPS, LJBT_JIT,
-# LJBT_ATTEMPTS, LJBT_CRASH_SECS, LJBT_KEEP, LJBT_VERBOSE; TMPDIR;
-# LJBT_RUST_TARGET, CARGO (tests/test_rust.py).
+# The extensions are luajit_gdb.py and tarantool_gdb.py of this repo;
+# LJBT_LUAJIT_DBG and LJBT_TT_GDB run the tests with others, e.g. those
+# of the release (tests/fetch.sh prints them as LJBT_RELEASE_LUAJIT_DBG
+# and LJBT_RELEASE_TT_GDB).
+#
+# Environment (see tests/common.py): LJBT_TARANTOOL is required;
+# LJBT_LUAJIT_DBG, LJBT_TT_GDB, LJBT_SEEDS, LJBT_SEED0, LJBT_STOPS,
+# LJBT_JIT, LJBT_ATTEMPTS, LJBT_CRASH_SECS, LJBT_KEEP, LJBT_VERBOSE;
+# TMPDIR; LJBT_RUST_TARGET, CARGO (tests/test_rust.py).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 : "${LJBT_TARANTOOL:?set LJBT_TARANTOOL to a tarantool binary with DWARF}"
-: "${LJBT_LUAJIT_DBG:?set LJBT_LUAJIT_DBG to luajit_dbg.py of that build}"
 [ $# -eq 0 ] && set -- oracle core random stops tail cli env window rust
 [ "$*" = all ] && set -- oracle core random stops tail cli env window rust \
     crash

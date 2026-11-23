@@ -1,6 +1,5 @@
 # lj-bt on examples/mixed.lua.  From the repository root:
 #
-#   LJBT_LUAJIT_DBG=<luajit>/src/luajit_dbg.py \
 #   gdb -x examples/example.gdb --args tarantool examples/mixed.lua sort on main
 #
 # Stops in the C implementation of box.space.t:get() called from a
@@ -10,10 +9,7 @@ set confirm off
 set print frame-arguments none
 handle SIGPROF nostop noprint pass
 handle SIGPIPE nostop noprint pass
-python
-import os
-gdb.execute('source ' + os.environ['LJBT_LUAJIT_DBG'])
-end
+source luajit_gdb.py
 source luajit_backtrace_gdb.py
 break lbox_session_id
 run
