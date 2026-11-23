@@ -172,19 +172,43 @@ class CrashMixin(object):
     prefix), and LUA, all the Lua lines, both regexps ({crash} the path
     of crash.lua, {NAME} the line of its marker NAME_LINE or NAME); the
     "!!" of sysprof's stale top_frame: above the top frame by SHIFT
-    slots, or (OVERWRITTEN) at it, a link being written.  A gcore taken
-    right there gives the same lj-bt.'''
+    slots, or (OVERWRITTEN) at it, a link being written.  A workload
+    with more than one shape lists them in SHAPES, (FRAMES, LUA, SHIFT,
+    OVERWRITTEN) each; the one whose FRAMES match is checked.  A gcore
+    taken right there gives the same lj-bt.'''
     what = None
     FRAMES = LUA = None
     SHIFT = (1, 64)
     OVERWRITTEN = True
+    SHAPES = None
 
     def pattern(self, rx):
         lines = dict((m, crash_line(m + '_LINE'))
                      for m in ('TRIGGER', 'JSON', 'SORT', 'MAIN'))
         lines.update((m, crash_line(m)) for m in ('HANDLE_DEF',
-                                                  'SERIALIZE_DEF'))
+                                                  'SERIALIZE_DEF',
+                                                  'TRIGGER_DEF'))
         return rx.format(crash=re.escape(CRASH_LUA), **lines)
+
+    def check_shape(self, frames, lua, notes, text):
+        '''lj-bt at the crash (frame_tokens, lua_text, notes; text for the
+        messages) has one of the shapes of the workload.'''
+        shapes = self.SHAPES or [(self.FRAMES, self.LUA, self.SHIFT,
+                                  self.OVERWRITTEN)]
+        found = [s for s in shapes
+                 if re.match('^' + self.pattern(s[0]), frames)]
+        self.assertTrue(found, 'no shape of {} has these frames: {}\n{}'
+                        .format(self.what, frames, text))
+        _, rx, (lo, hi), overwritten = found[0]
+        self.assertRegex(lua, '^{}$'.format(self.pattern(rx)), text)
+        sysprof = [m for m in (RX_SYSPROF.fullmatch(n) for n in notes) if m]
+        self.assertEqual(len(sysprof), 1, notes)
+        if sysprof[0].group(2) is None:
+            self.assertTrue(overwritten, notes)
+        else:
+            self.assertGreaterEqual(int(sysprof[0].group(2)), lo, notes)
+            if hi is not None:
+                self.assertLessEqual(int(sysprof[0].group(2)), hi, notes)
 
     @unittest.skipUnless(C.HAS_SYSPROF, C.NO_SYSPROF)
     def test_crash(self):
@@ -216,22 +240,7 @@ class CrashMixin(object):
         self.assertIsNone(C.cframes_mismatch(doc, rec['bt']))
         frames = frame_tokens(doc)
         self.assertIsNotNone(frames, rec['text'])
-        self.assertRegex(frames, '^' + self.pattern(self.FRAMES),
-                         rec['text'])
-        self.assertRegex(lua_text(doc), '^{}$'.format(
-            self.pattern(self.LUA)), rec['text'])
-        sysprof = [m for m in (RX_SYSPROF.fullmatch(n) for n in doc['notes'])
-                   if m]
-        self.assertEqual(len(sysprof), 1, doc['notes'])
-        if sysprof[0].group(2) is None:
-            self.assertTrue(self.OVERWRITTEN, doc['notes'])
-        else:
-            lo, hi = self.SHIFT
-            self.assertGreaterEqual(int(sysprof[0].group(2)), lo,
-                                    doc['notes'])
-            if hi is not None:
-                self.assertLessEqual(int(sysprof[0].group(2)), hi,
-                                     doc['notes'])
+        self.check_shape(frames, lua_text(doc), doc['notes'], rec['text'])
         # The core of the crash, no process: the same lj-bt.
         self.assertTrue(os.path.exists(core), 'no core')
         out = wd.file('core-probe.jsonl')
@@ -260,15 +269,67 @@ class TestCrashTrigger(CrashMixin, unittest.TestCase):
     # below the signal.  cur_L is the fiber of the loop, sysprof's
     # top_frame a frame of another Lua stack, far off.  Not called from a
     # trace, space_mt.replace tail-calls lbox_replace (3.3).
+    #
+    # Or entering or leaving the trigger (lua_pcall of luaT_call): the VM
+    # right below the signal (lj_vm_leave_unw, the end of every return of
+    # the VM), the frame of the trigger there or not yet/any more, and
+    # sysprof's top_frame that of the trigger on the same stack, a few
+    # slots above the top (seen with a non-GC64 build: +3).
     what = 'trigger'
-    FRAMES = (r'sig:[^|]*\|(c:[^|]*\|)+c:lbox_replace=lbox_replace\|'
-              r'vm:lj_BC_FUNCC\|c:lua_pcall\|')
     LUA = (r'(\[lua\] \(tail call from method .replace. = [^|]*\)  '
            r'\[heuristic\]\|)?'
            r'\[lua\] {crash}:{TRIGGER} in function <{crash}:\d+>  '
            r'<called from C: lua_pcall/cpcall>')
-    SHIFT = (1000, None)
-    OVERWRITTEN = False
+    SHAPES = [
+        (r'sig:[^|]*\|(c:[^|]*\|)+c:lbox_replace=lbox_replace\|'
+         r'vm:lj_BC_FUNCC\|c:lua_pcall\|', LUA, (1000, None), False),
+        (r'sig:[^|]*\|vm:lj_(vm|BC)_[^|]*\|c:lua_pcall\|c:luaT_call\|'
+         r'(c:[^|]*\|)+c:lbox_replace=lbox_replace\|vm:lj_BC_FUNCC\|'
+         r'c:lua_pcall\|',
+         r'(\[lua\] {crash}:\d+ in function <{crash}:{TRIGGER_DEF}>  '
+         r'<called from C: lua_pcall/cpcall>\|)?' +
+         LUA, (1, 64), True),
+    ]
+
+
+class TestCrashShapes(unittest.TestCase):
+    '''The shapes of TestCrashTrigger against lj-bt at crashes seen (no
+    run, no sysprof): in C under lbox_replace (3.9.0, GC64), and the VM
+    leaving the trigger (a non-GC64 build: lj_vm_leave_unw right below
+    the signal, sysprof's top_frame 3 slots above the top).'''
+
+    TAIL = ('c:func_adapter_lua_call|c:func_adapter_call|'
+            'c:space_run_replace_triggers|c:space_run_replace_triggers|'
+            'c:space_on_replace|c:txn_commit_stmt|c:box_process_rw|'
+            'c:box_process1|c:box_replace|')
+    BOTTOM = ('c:lbox_replace=lbox_replace|vm:lj_BC_FUNCC|c:lua_pcall|'
+              'c:luaT_call|c:lua_fiber_run_f|c:fiber_cxx_invoke(fiber_func, '
+              'typedef __va_list_tag __va_list_tag *)|c:fiber_loop|'
+              'c:coro_init|')
+    NOTE = ('!! sysprof walks cur_L from top_frame_info.top_frame-1 = {}, '
+            'the top frame is {} ({} slots)')
+
+    def check(self, frames, note):
+        line = crash_line('TRIGGER_LINE')
+        # The fiber function of the loop, 3 lines above its replace.
+        lua = ('[lua] {0}:{1} in function <{0}:{2}>  <called from C: '
+               'lua_pcall/cpcall>'.format(CRASH_LUA, line, line - 3))
+        TestCrashTrigger('test_crash').check_shape(frames, lua, [note],
+                                                   frames)
+
+    def test_in_c(self):
+        self.check('sig:__restore_rt|c:lj_tab_newkey|c:lj_tab_set|'
+                   'c:lj_tab_resize|c:rehashtab|c:lj_tab_newkey|c:lj_tab_set|'
+                   'c:lj_cdata_setfin|c:luaL_setcdatagc|c:luaT_pushtuple|'
+                   'c:port_c_dump_lua|c:port_dump_lua|' + self.TAIL +
+                   'c:lbox_replace|' + self.BOTTOM,
+                   self.NOTE.format('0x7ffff79485a8', '0x7ffff6374680',
+                                    '+2861029'))
+
+    def test_leaving_the_trigger(self):
+        self.check('sig:__restore_rt|vm:lj_vm_leave_unw|c:lua_pcall|'
+                   'c:luaT_call|' + self.TAIL + self.BOTTOM,
+                   self.NOTE.format('0x40621a58', '0x40621a40', '+3'))
 
 
 class TestCrashJson(CrashMixin, unittest.TestCase):

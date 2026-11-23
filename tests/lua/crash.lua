@@ -40,7 +40,9 @@ function W.netbox()
 end
 
 function W.trigger()
-  s:on_replace(function(old, new) if new ~= nil then return new end end)
+  s:on_replace(function(old, new)  -- TRIGGER_DEF
+    if new ~= nil then return new end
+  end)
   fiber.create(function()
     local i = 0
     while clock.monotonic() < deadline do
