@@ -285,6 +285,7 @@ NOTLS = BOX.variant('box-notls', sources=[H.HIDE_ENUMS] + SOURCES,
                         ('fibers', 'info tt-fibers'),
                         ('fiber', 'tt-fiber'),
                         ('tuple', 'print *$t'),
+                        ('tuple.format_id', 'eval:$t->format_id'),
                         ('threads.fibers', 'dbg-threads info tt-fibers'),
                         ('threads.tp', 'dbg-threads output *(long *){}'
                          .format(TLS_BASE)),
@@ -599,10 +600,12 @@ class TestNoTLS(DbgCase):
                                  want[rank], (mode, rank))
 
     def test_tuple(self):
-        self.assertEqual(re.sub(r'0x[0-9a-f]+', 'X',
-                                value(self.out(NOTLS, 'tuple'))),
-                         re.sub(r'0x[0-9a-f]+', 'X',
-                                value(self.out(BOX, 'tuple'))))
+        # Another process: the format id may differ.
+        out = value(self.out(NOTLS, 'tuple'))
+        self.assertIn('format_id = {},'.format(
+            self.value(NOTLS, 'tuple.format_id')), out)
+        self.assertTrue(out.endswith('data = {}}}'.format(
+            mp_text(NOTLS.oracle()['tuple']))), out[-300:])
 
 class TestTuple(DbgCase):
     SCENARIOS = (BOX,)
