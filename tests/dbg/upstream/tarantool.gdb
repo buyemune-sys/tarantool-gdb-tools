@@ -8,6 +8,9 @@
 # frees their numbers.  Its startup Lua has also left hot counters near
 # zero (require, called hundreds of times, then makes a trace in the
 # test script): setting hotloop, to its default, resets them.
+#
+# The breakpoints at trace_stop stop in the trace of the script only
+# (script_trace_gdb.py, sourced after this file).
 python
 import os
 import gdb
@@ -23,4 +26,5 @@ end
 
 define hook-run
 python dbg_upstream_args()
+python dbg_script_traces()
 end

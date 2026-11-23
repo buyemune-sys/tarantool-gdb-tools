@@ -82,7 +82,8 @@ def tarantool_skips(version, arch, debugger='gdb'):
         'TestLJFuncFFKnown': PRINT,
         'TestLJCTypeBase': STARTUP.format('lj_cf_ffi_new'),
         'TestLJTab': STARTUP.format('lj_cf_unpack'),
-        'TestLJIRConst': STARTUP.format('trace_stop') + '; ' + HOOK,
+        # The stop is in the trace of the script (tarantool.gdb).
+        'TestLJIRConst': HOOK,
         'TestLJCTypeFunc': GETPID,
         'TestLJTraceIRRange': GETPID,
         'TestLJTraceBase': HOOK,
@@ -149,6 +150,48 @@ def tarantool_info(tarantool):
     return tuple(int(x) for x in out[0].split('-')[0].split('.')), out[1]
 
 
+class TestScriptTraceStop(unittest.TestCase):
+    '''The stop at trace_stop of the upstream tests is in the trace of
+    their script, whatever traces tarantool stops before it (CI run
+    45154576723, 3.9.0 arm64: TestLJJSlotsBase got the slots of a trace
+    of tarantool).  DBG_UPSTREAM_ARGS here makes a trace of its own stop
+    first, in the chunk of -e.'''
+
+    SCRIPT = 'jit.opt.start("hotloop=1")\nfor _ = 1, 4 do end\n'
+    PRE = '-e "jit.opt.start(\'hotloop=1\') for _ = 1, 4 do end"'
+
+    def test_foreign_trace_first(self):
+        wd = tempfile.mkdtemp(prefix='dbg-upstream-stop-')
+        self.addCleanup(shutil.rmtree, wd, True)
+        script = os.path.join(wd, 'script.lua')
+        with open(script, 'w') as fh:
+            fh.write(self.SCRIPT)
+        binary = os.environ['LUAJIT_TEST_BINARY']
+        cmds = os.path.join(wd, 'cmds')
+        if os.environ['DEBUGGER_COMMAND'].startswith('lldb'):
+            text = ('target create {}\nsettings set target.run-args {}\n'
+                    'b trace_stop\nprocess launch\ncommand script import ' +
+                    os.path.join(HERE, 'lldb_script_trace.py') +
+                    '\nscript print("chunk: " + '
+                    'lldb_script_trace.trace_chunk(lldb.frame))\n'
+                    'process kill\n')
+            opts = ['--batch', '--no-lldbinit', '--source-quietly',
+                    '--source']
+        else:
+            text = ('file {}\nset args {}\nb trace_stop\nrun\nsource ' +
+                    os.path.join(HERE, 'script_trace_gdb.py') +
+                    '\npython print("chunk: " + dbg_trace_chunk())\nkill\n')
+            opts = ['--batch', '--nx', '--quiet', '--command']
+        with open(cmds, 'w') as fh:
+            fh.write(text.format(binary, script))
+        p = subprocess.run(
+            [os.environ['DEBUGGER_COMMAND']] + opts + [cmds],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, universal_newlines=True, timeout=120,
+            env=dict(os.environ, DBG_UPSTREAM_ARGS=self.PRE))
+        self.assertIn('chunk: @' + script, p.stdout.splitlines(), p.stdout)
+
+
 def main():
     tarantool = os.environ.get('LJBT_TARANTOOL')
     if not tarantool:
@@ -185,6 +228,7 @@ def main():
                 mod.TestLoad.pattern = mod.TestLoad.pattern.replace(
                     gco, gco + r'lj-gctop command initialized\n')
         red_zone_any_value(mod)
+        mod.TestScriptTraceStop = TestScriptTraceStop
         for name, why in tarantool_skips(*tarantool_info(tarantool),
                                          debugger=debugger).items():
             setattr(mod, name, unittest.skip(why)(getattr(mod, name)))

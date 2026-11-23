@@ -22,6 +22,11 @@ gdb with `tarantool.gdb`, whose `hook-run` puts
 `-e "jit.opt.start('hotloop=56') jit.flush()"` in front of the inferior
 arguments: the first trace of a test script is trace 1 as in plain
 LuaJIT, and no Lua of tarantool's startup is about to become hot.
+`script_trace_gdb.py`, loaded after it, gives every breakpoint at
+`trace_stop` the condition `$dbg_script_trace()`: it stops in a trace
+that started in the test script only (a trace tarantool began before
+the script stops first now and then, stitched at `jit.opt.start`;
+`TestScriptTraceStop` of the runner makes one stop first).
 
 ```
 LJBT_TARANTOOL=<tarantool with DWARF> python3 tests/dbg/upstream/run_luajit.py
@@ -47,8 +52,10 @@ it only in the atomic GC phase.
 the `settings set target.run-args` line of the commands of each test,
 and does not pass SIGALRM to tarantool (`process handle`): the 10 ms
 timer of tarantool's low-resolution clock keeps one pending in a
-stopped process, and lldb's `n` then stops where it began. The upstream
-file skips the deferred loading in lldb; two more tests are skipped
+stopped process, and lldb's `n` then stops where it began. Its
+breakpoints at `trace_stop` get the callback of `lldb_script_trace.py`,
+the same check as in gdb. The upstream file skips the deferred loading
+in lldb; two more tests are skipped
 there, both for where lldb puts a breakpoint by name: at the entry of
 `lj_cf_dofile`, where `fname` is not set yet after one `n`
 (`TestLJStr`), and, for the inlined `gc_sweep_str_chain`, at the start

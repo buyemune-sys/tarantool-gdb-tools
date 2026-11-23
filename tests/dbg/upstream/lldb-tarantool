@@ -14,14 +14,21 @@
 # stopped process, and the `n` of every test then stops where it began
 # (the handler runs, the breakpoint at the pc is hit again), as `n` does
 # in lldb in any program with such a timer.  gdb steps over it.
+#
+# A breakpoint at trace_stop stops only in a trace of the script of the
+# test (lldb_script_trace.py; $dbg_script_trace() of tarantool.gdb).
 import os
 import sys
 import tempfile
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 PRE = os.environ.get('DBG_UPSTREAM_ARGS',
                      '-e "jit.opt.start(\'hotloop=56\') jit.flush()"')
 SET_ARGS = 'settings set target.run-args '
 SIGNALS = 'process handle SIGALRM --pass false --stop false --notify false'
+IMPORT = 'command script import ' + os.path.join(HERE, 'lldb_script_trace.py')
+TRACE_STOP = ('b trace_stop', 'breakpoint set -n trace_stop')
+SCRIPT_TRACE = 'breakpoint command add -F lldb_script_trace.script_trace'
 
 
 def main():
@@ -38,7 +45,9 @@ def main():
                 s = SET_ARGS + PRE + ' ' + s[len(SET_ARGS):]
             out.append(s)
             if s.startswith('target create '):
-                out.append(SIGNALS)
+                out += [SIGNALS, IMPORT]
+            if s.strip() in TRACE_STOP:
+                out.append(SCRIPT_TRACE)
         lines = out
         fd, tmp = tempfile.mkstemp(prefix='lldb-tarantool-', suffix='.cmd')
         with os.fdopen(fd, 'w') as fh:
