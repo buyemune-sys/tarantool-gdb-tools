@@ -284,6 +284,21 @@ print('BOTTOMS ' + json.dumps(res))
         self.assertIn("(tail call from global 'lj_a' = ", out)
         self.assertNotRegex(out, r'(?m)^\s*!!')
 
+    def test_no_G(self):
+        # No G: gdb cannot read tarantool_L, a thread-local variable since
+        # 3.7 (gdb 15 with `symbol-file` of a PIE loads no libthread_db,
+        # so no TLS: test_stripped_with_symbol_file there).  The Lua frames
+        # come from the VM entries; the tail call heuristic stopped lj-bt
+        # with a Python TypeError (G holds the string "__index").
+        hide = self.wd.write('noG.py',
+                             'def ljbt_find_G():\n    return None\n')
+        out = self.gdb(C.gdb_prelude() + 'source {}\n'.format(hide) +
+                       STOPS.format(cmd='lj-bt\nkill'), scenario())
+        self.assertNotIn('Python Exception', out)
+        self.assertRegex(out, r'(?m)^lj-bt: L=0x0 \(none\)')
+        self.assertRegex(out, r'(?m)^#\d+\.\d+\s+\[lua\] ')
+        self.assertIn("(tail call from global 'lj_a' = ", out)
+
     def test_bc_mode_table(self):
         # The table of lj-bt is what lj_bc_mode says of every bytecode of
         # this build, as far as the heuristic tells modes apart.

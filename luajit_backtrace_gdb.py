@@ -1500,9 +1500,15 @@ def ljbt_tab_rawgetstr(taddr, saddr):
 
 
 def ljbt_tab_getstr(taddr, saddr):
-    '''t[s] following __index tables; None if an __index is a function.'''
-    g = ljbt_cast('global_State *', ljbt_conf().G)
-    sindex = int(ljbt_lj.gcref(g['gcroot'][LJBT_GCROOT_MMNAME]))
+    '''t[s] following __index tables; None if an __index is a function,
+    or if a metatable is met with no G known: the string "__index" is in
+    G (gdb may not read tarantool_L, a thread-local variable, e.g. gdb 15
+    with `symbol-file` of a PIE).'''
+    G = ljbt_conf().G
+    sindex = None
+    if G:
+        g = ljbt_cast('global_State *', G)
+        sindex = int(ljbt_lj.gcref(g['gcroot'][LJBT_GCROOT_MMNAME]))
     for _ in range(16):
         v = ljbt_tab_rawgetstr(taddr, saddr)
         if v[0] != 'LJ_TNIL':
@@ -1510,6 +1516,8 @@ def ljbt_tab_getstr(taddr, saddr):
         mt = int(ljbt_lj.gcref(ljbt_cast('GCtab *', taddr)['metatable']))
         if not mt:
             return v
+        if sindex is None:
+            return None
         idx = ljbt_tab_rawgetstr(mt, sindex)
         if idx[0] == 'LJ_TNIL':
             return v
