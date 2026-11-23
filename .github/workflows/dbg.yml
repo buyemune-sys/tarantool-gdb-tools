@@ -1,11 +1,12 @@
 name: dbg
 
-# The universal luajit_dbg.py against the official static builds (they
-# carry DWARF) of every Tarantool CE 3.x minor, 3.0 to 3.9, last patch
-# of each: tests/dbg (every command live and on a gcore core) and the
-# vendored LuaJIT debugger tests.  The latter also run with the
-# extension of each release, for information: what they fail there is
-# what the universal file fixes.
+# The universal luajit_dbg.py and tarantool-gdb.py against the official
+# static builds (they carry DWARF) of every Tarantool CE 3.x minor, 3.0
+# to 3.9, last patch of each: tests/dbg (every command live and on a
+# gcore core) and the vendored upstream tests (LuaJIT's debugger tests,
+# tarantool's test/gdb and test-tarantool-gdb.py).  The upstream ones
+# also run with the extensions of each release, for information: what
+# they fail there is what the universal files fix.
 on:
   push:
   pull_request:
@@ -48,11 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install gdb
+      - name: Install gdb and pytest
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdb
+          sudo apt-get install -y gdb python3-pytest
           gdb --version | head -1
+          python3 -m pytest --version
 
       - name: Cache the Tarantool build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -87,6 +89,33 @@ jobs:
             echo "### LuaJIT's debugger tests, $(basename "$LJBT_LUAJIT_DBG") of ${{ matrix.version }} ${{ matrix.arch }}"
             echo '```'
             grep -E '^(FAIL|ERROR):|^Ran |^OK|^FAILED' "$TMPDIR/run-upstream-orig.log" | grep -v deferred
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+        shell: bash
+
+      # The tarantool-gdb.py steps run whatever the luajit_dbg.py ones did.
+      - name: tarantool-gdb.py tests
+        if: ${{ !cancelled() }}
+        run: tests/dbg/run.sh tarantool 2>&1 | tee "$TMPDIR/run-tarantool.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: tarantool's gdb tests
+        if: ${{ !cancelled() }}
+        run: tests/dbg/run.sh upstream-tarantool 2>&1 | tee "$TMPDIR/run-upstream-tarantool.log"; exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      # For information: tools/tarantool-gdb.py of the release itself.
+      - name: tarantool's gdb tests with the tarantool-gdb.py of ${{ matrix.version }}
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          DBG_TT_GDB=$LJBT_TT_GDB tests/dbg/run.sh upstream-tarantool 2>&1 | tee "$TMPDIR/run-upstream-tarantool-orig.log"
+          rc=${PIPESTATUS[0]}
+          {
+            echo "### tarantool's gdb tests, tarantool-gdb.py of ${{ matrix.version }} ${{ matrix.arch }}"
+            echo '```'
+            grep -E '^(PASSED|FAILED|ERROR) [^(]|^=+ .* in [0-9.]+s' "$TMPDIR/run-upstream-tarantool-orig.log" | sed 's|^\([A-Z]*\) .*/upstream/|\1 |'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
