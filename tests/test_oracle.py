@@ -144,24 +144,28 @@ class OracleMixin(object):
 
     @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
     def test_sleeping_parent_fiber(self):
-        # ['fiber', 'call']: the creator of the fiber sleeps in ch:get()
-        # inside F12_0; lj-bt of that fiber (tt-fiber) shows it.
-        rec = self.stops[12][0]
-        self.assertIn('all_fibers', rec, rec.get('all_fibers_error'))
-        found = False
-        for fb in rec['all_fibers']:
-            if fb['bt'] is None:
+        # The creators of the fibers of a chain (12: ['fiber', 'call'];
+        # 16: a coroutine and a sort comparator below the fiber step)
+        # wait in fiber.create of their F_k, which runs the new fiber at
+        # once; lj-bt of each such fiber, from --all-fibers (tt-fiber),
+        # shows its whole Lua stack: the model of the chain up to F_k,
+        # under lbox_fiber_create.
+        n = 0
+        for ch in self.chains:
+            if not ch.parents:
                 continue
-            for e in C.entries(fb['bt']):
-                if e.get('defline') is not None and e['kind'] == 'lua' and \
-                        e['chunk'] and e['chunk'].endswith('chains.lua') and \
-                        re.search(r'F12_0', self.chain_src(e['defline'])):
-                    found = True
-        self.assertTrue(found, 'F12_0 not found in any fiber')
-
-    def chain_src(self, line):
-        with open(self.wd.file('chains.lua')) as fh:
-            return fh.read().splitlines()[line - 1]
+            rec = self.stops[ch.seq][0]
+            self.assertIn('all_fibers', rec, rec.get('all_fibers_error'))
+            stacks = [gen.tokens(C.entries(fb['bt']))
+                      for fb in rec['all_fibers'] if fb['bt'] is not None]
+            for k, parent in enumerate(ch.parents):
+                with self.subTest(seq=ch.seq, parent=k):
+                    self.assertTrue(parent in stacks,
+                                    'no fiber shows {}:\n{}'.format(
+                                        parent, '\n'.join(
+                                            str(s) for s in stacks if s)))
+                    n += 1
+        self.assertGreaterEqual(n, 2)
 
 
 for _jit in C.jit_modes():

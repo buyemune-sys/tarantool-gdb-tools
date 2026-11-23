@@ -103,13 +103,19 @@ class Program(object):
                 bottom.append(('L', 0, mline))
             bottom.append(('L', dline, calls[ch.seq]))
             bottom.append(('B', 'pcall'))
-            if ch.model and ch.model[0] == ('RESET',):
-                ch.model = ch.model[1:]
-            else:
-                ch.model = bottom + ch.model
-            # Fiber transitions reset the stack: keep the last part.
-            while ('RESET',) in ch.model:
-                ch.model = ch.model[ch.model.index(('RESET',)) + 1:]
+            # Fiber transitions reset the stack: keep the last part.  The
+            # part before is the stack of the creator: fiber.create runs
+            # the new fiber at once, the creator waits in it, at the line
+            # of its call.
+            full = bottom + ch.model
+            ch.parents = []
+            start = 0
+            for i, t in enumerate(full):
+                if t == ('RESET',):
+                    ch.parents.append(full[start:i] +
+                                      [('B', 'lbox_fiber_create')])
+                    start = i + 1
+            ch.model = full[start:]
         return '\n'.join(self.lines) + '\n'
 
     def render_chain(self, ch):
