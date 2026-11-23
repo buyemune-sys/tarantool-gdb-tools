@@ -20,7 +20,8 @@ from harness import DbgCase, Scenario, gcval
 
 ORACLE_TT = os.path.join(H.HERE, 'oracle_tt.py')
 SOURCES = [H.TT_GDB, ORACLE_TT]
-TLS_BASE = '$tpidr_el0' if H.ARCH == 'arm64' else '$fs_base'
+# The thread pointer as gdb names the register (TPIDR_EL0 is $tpidr).
+TLS_BASE = '$tpidr' if H.ARCH == 'arm64' else '$fs_base'
 
 COMMANDS = ['info tt-fibers', 'tt-fiber', 'tt-list', 'tt-list-walk',
             'tt-mp']
