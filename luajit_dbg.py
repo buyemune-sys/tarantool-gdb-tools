@@ -1201,12 +1201,20 @@ def gcnext(obj):
     return gcref(obj)['gch']['nextgc']
 
 
+def lookup_main_coro(symbol):
+    try:
+        return dbg.lookup_global(symbol)
+    except Exception:
+        # A thread-local one and no thread to read it in.
+        return None
+
+
 def L(L=None):
     # Look up a symbol for the main coroutine considering the host
     # application.
     # XXX Fragile: Though the loop initialization looks bad, it
     # respects both Python 2 and Python 3.
-    for lstate in [L] + list(map(lambda main: dbg.lookup_global(main), (
+    for lstate in [L] + list(map(lambda main: lookup_main_coro(main), (
         # LuaJIT main coro (see luajit/src/luajit.c).
         'globalL',
         # Tarantool main coro (see tarantool/src/lua/init.h).
@@ -1215,6 +1223,10 @@ def L(L=None):
     ))):
         if lstate:
             return dbg.cast('lua_State *', lstate)
+    # Both are NULL before the Lua is set up; tarantool_L is __thread
+    # since Tarantool 3.7, NULL in the threads with no Lua.
+    raise dbg.error('no lua_State: neither globalL nor tarantool_L '
+                    'is set in this thread')
 
 
 def G(L):

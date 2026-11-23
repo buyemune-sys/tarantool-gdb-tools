@@ -137,6 +137,56 @@ class TestArchStateGC(DbgCase):
         check_gc(self, BASIC, 'PAUSE')
 
 
+# No Lua state to take G from: before tarantool_L is set, and in a
+# thread with no Lua (tarantool_L is __thread since 3.7: NULL there; a
+# plain global before, the same in every thread).
+NO_L = 'no lua_State: neither globalL nor tarantool_L is set in this thread'
+MAIN_COMMANDS = ['lj-state', 'lj-gc', 'lj-stack', 'lj-jslots']
+EARLY = Scenario('early', 'print(1)\n', ['break tarantool_lua_init'],
+                 [('tarantool_L', 'eval:(long)tarantool_L')] +
+                 [(c, c) for c in MAIN_COMMANDS])
+SWITCH = ('python inf = gdb.selected_inferior(); [t for t in inf.threads() '
+          'if (t.ptid[1] {} inf.pid)][0].switch()')
+THREADS = Scenario('threads', '''
+local fio = require('fio')
+fio.stat('/')                   -- a coio thread does it
+print(1)
+''', ['break lj_cf_print'],
+    # gcore leaves the last thread selected: pick both explicitly.
+    [('to_main', SWITCH.format('==')),
+     ('main.L', 'eval:(long)tarantool_L')] +
+    [('main.' + c, c) for c in MAIN_COMMANDS[:3]] +
+    [('to_coio', SWITCH.format('!=')),
+     ('coio.L', 'eval:(long)tarantool_L')] +
+    [('coio.' + c, c) for c in MAIN_COMMANDS])
+
+
+class TestNoLuaState(DbgCase):
+    SCENARIOS = (EARLY, THREADS)
+
+    def test_early(self):
+        self.assertEqual(self.value(EARLY, 'tarantool_L'), 0)
+        for c in MAIN_COMMANDS:
+            for mode, err in self.errs(EARLY, c):
+                self.assertEqual(err, NO_L, '{} ({})'.format(c, mode))
+
+    def test_thread_without_lua(self):
+        main = self.value(THREADS, 'main.L')
+        self.assertNotEqual(main, 0)
+        if self.value(THREADS, 'coio.L') == 0:
+            # 3.7+: no Lua in this thread.
+            for c in MAIN_COMMANDS:
+                for mode, err in self.errs(THREADS, 'coio.' + c):
+                    self.assertEqual(err, NO_L, '{} ({})'.format(c, mode))
+        else:
+            # The global tarantool_L: the Lua of tx from every thread.
+            self.assertEqual(self.value(THREADS, 'coio.L'), main)
+            for c in MAIN_COMMANDS[:3]:
+                self.assertEqual(self.out(THREADS, 'coio.' + c),
+                                 self.out(THREADS, 'main.' + c))
+        self.assertNoPyError(THREADS)
+
+
 def check_gc(case, scen, state):
     v = lambda k: case.value(scen, 'gc.' + k)  # noqa: E731
     want = ['GC stats: ' + state]
