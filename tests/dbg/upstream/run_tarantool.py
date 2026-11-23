@@ -19,6 +19,7 @@
 # default: this one), TMPDIR.
 
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -38,11 +39,22 @@ def main():
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
     env['PYTHONPATH'] = os.pathsep.join(
         [HERE] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
+    test_gdb = os.path.join(HERE, 'tarantool', 'test_gdb.py')
     cmd = [python, '-m', 'pytest', '-v', '-rA',
            '--noconftest', '-p', 'tt_fixtures', '-p', 'no:cacheprovider',
-           '--rootdir', HERE,
-           os.path.join(HERE, 'tarantool', 'test_gdb.py'),
-           os.path.join(HERE, 'tt_mp_test.py')] + sys.argv[1:]
+           '--rootdir', HERE, test_gdb, os.path.join(HERE, 'tt_mp_test.py')]
+    if platform.machine() in ('aarch64', 'arm64'):
+        # ut_tl_var.py takes a TLS offset for negative (x86-64, TLS
+        # variant II: the variables below the thread pointer): on
+        # AArch64 they are above it.  test_tarantool.py checks the
+        # $tl_var_* functions there.
+        print('run_tarantool.py: not run on AArch64, ut_tl_var.py wants '
+              'the x86-64 TLS layout: test_tl_var_live, '
+              'test_tl_var_postmortem')
+        for t in ('test_tl_var_live', 'test_tl_var_postmortem'):
+            # A node id is relative to the rootdir.
+            cmd += ['--deselect', 'tarantool/test_gdb.py::' + t]
+    cmd += sys.argv[1:]
     # The tests run gdb and tarantool in the current directory.
     with tempfile.TemporaryDirectory(prefix='dbg-tt-upstream-') as wd:
         sys.exit(subprocess.run(cmd, env=env, cwd=wd).returncode)

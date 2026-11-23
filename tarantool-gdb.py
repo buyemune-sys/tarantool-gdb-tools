@@ -2591,41 +2591,22 @@ Examples (repeat the command until the list is exhausted):
 TtListWalk()
 
 
-def log(msg):
-    gdb.write(msg + "\n")
-    pass
-
-
 class SearchMemory(gdb.Function):
     """
-Return address of thread-local variable for the current thread.
+Return the address of the first occurrence of a value in memory.
 
-GDB needs additional thread-specific debugging information so user is able to handle
-thread-local variables (the ones that are declared with 'thread_local' or similar specifiers)
-in the same way as regular ones. This debugging information is provided with libthread_db and
-might be unavailable for some reason. If so this function might be helpful.
-
-This function uses the fact that thread-local variable is stored at the same offset
-in every thread local storage (TLS), so if the offset for the certain variable is
-discovered somehow one might use this function to get variable address.
-
-Usage: $tl_var_address(TLS_OFFSET)
+Usage: $find(START_ADDRESS, LENGTH, VAL)
 
 Arguments:
-    TLS_OFFSET: offset the variable is stored at in TLS
+    START_ADDRESS: where to start
+    LENGTH: how many bytes to search
+    VAL: the value whose bytes to look for
 
-Returns:
-    Address of the variable for the current thread
-
-Example:
-    # Display some thread-local string (assume it's TLS-offset is 0x100)
-    print (char*)$tl_var_address(0x100)
-    # Display errno (which is thread-local) of every thread (assume it's TLS-offset is 123)
-    thread apply all print *(int*)$tl_var_address(120)
+It is gdb's memory search (see 'help find'): a range that runs into
+memory gdb cannot read may give a wrong address.
 
 See also:
-    help function find_tl_var_like
-    help show max_tls_offset
+    help function tl_var_find_offset
     """
 
     def __init__(self):
@@ -2666,17 +2647,65 @@ class TlVarSearchRangeParam(gdb.Parameter):
 TlVarSearchRangeParam()
 
 
-def tls_base():
+def tls_arch():
     arch = gdb.selected_frame().architecture()
-    tls_base_expr = {
-        arch_id_x86_64: "$fs_base",
-        arch_id_aarch64: "$tpidr_el0",
-    }.get(map_to_arch_id(arch))
-
-    if tls_base_expr is None:
+    arch_id = map_to_arch_id(arch)
+    if arch_id is None:
         raise gdb.GdbError("tls_base: architecture '{}' is not supported".format(arch.name()))
+    return arch_id
 
-    return gdb.parse_and_eval(tls_base_expr)
+
+def tls_base():
+    """The thread pointer of the selected thread, as a 'char *'."""
+    # gdb names the AArch64 one tpidr; tpidr_el0 is for an older name.
+    exprs = {
+        arch_id_x86_64: ["$fs_base"],
+        arch_id_aarch64: ["$tpidr", "$tpidr_el0"],
+    }[tls_arch()]
+    for expr in exprs:
+        try:
+            base = gdb.parse_and_eval(expr)
+        except gdb.error:
+            continue
+        # An unknown register is a void convenience variable.
+        if base.type.code != gdb.TYPE_CODE_VOID:
+            return base.cast(gdb.lookup_type('long')).cast(
+                gdb.lookup_type('char').pointer())
+    raise gdb.GdbError("tls_base: no {} in this thread".format(' or '.join(exprs)))
+
+
+def tls_below_base():
+    """Thread-local variables are below the thread pointer (x86-64,
+    TLS variant II) or above it (AArch64, variant I)."""
+    return tls_arch() == arch_id_x86_64
+
+
+class SelectedThread(object):
+    """with SelectedThread(): ... switches threads freely and gets the
+    thread and the frame selected before back."""
+
+    def __enter__(self):
+        self.__thread = gdb.selected_thread()
+        try:
+            self.__frame = gdb.selected_frame()
+        except gdb.error:
+            self.__frame = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.__thread is not None and self.__thread.is_valid():
+            self.__thread.switch()
+            if self.__frame is not None and self.__frame.is_valid():
+                self.__frame.select()
+        return False
+
+
+def threads_from_selected():
+    """The threads, the selected one first."""
+    cur = gdb.selected_thread()
+    rest = sorted((t for t in gdb.selected_inferior().threads() if t != cur),
+                  key=lambda t: t.num)
+    return ([cur] if cur is not None else []) + rest
 
 
 class TlVarAddr(gdb.Function):
@@ -2715,15 +2744,11 @@ See also:
         super(TlVarAddr, self).__init__("tl_var_addr")
 
     def invoke(self, tls_offset):
-        return offset_ptr(tls_base(), tls_offset)
+        return offset_ptr(tls_base(), int(tls_offset)).cast(
+            gdb.lookup_type('void').pointer())
 
 
 TlVarAddr()
-
-
-def log(msg):
-    gdb.write(msg + "\n")
-    pass
 
 
 # Generally it is expected that if 'find_tls_offset' function is needed it works fine.
@@ -2740,9 +2765,11 @@ If so this function might be helpful.
 
 It iterates over all threads and search every thread-local
 storage (TLS) for the 'ref_val'. If found the offset from the base address of
-the corresponding TLS is returned, otherwise it returns 'None'.
-Thread-local variables are stored in a region preceding base of TLS, that is
-when found the returned offset is always negative.
+the corresponding TLS is returned (the one closest to the base of all the
+threads), otherwise it fails.
+Thread-local variables are stored in a region preceding base of TLS on x86-64,
+that is when found the returned offset is negative there; on AArch64 they
+follow the base and the offset is positive.
 
 It uses the fact that certain thread-local variable is stored with the same
 offset relative to the base memory address of thread-local storage (TLS) so
@@ -2795,56 +2822,70 @@ See also:
             ))
 
         # Turn gdb.Value into search pattern.
-        log("TlVarFindOffset.invoke: 1 search_range={}".format(search_range))
         ref_val_as_array = ref_val.cast(gdb.lookup_type("uint8_t").array(ref_val.type.sizeof-1))
-        log("TlVarFindOffset.invoke: 2")
-        search_pattern = bytes((ref_val_as_array[i] for i in range(ref_val.type.sizeof)))
-        log("TlVarFindOffset.invoke: 3")
+        search_pattern = bytes((int(ref_val_as_array[i]) for i in range(ref_val.type.sizeof)))
+        search_range = int(search_range)
 
         offset = self.__cached_offsets.get(search_pattern)
-        log("TlVarFindOffset.invoke: 4 offset={}".format(offset))
-        if offset is None or search_range < -offset:
-            log("TlVarFindOffset.invoke: 5 offset={}".format(offset))
-            offset = self.__find_offset(search_pattern, search_range)
-            log("TlVarFindOffset.invoke: 6 offset={}".format(offset))
+        if offset is None or search_range < abs(offset) + len(search_pattern):
+            offset = self.find_offset(search_pattern, search_range)
             if offset is None:
                 raise gdb.GdbError("Failed to find the given value in any TLS.")
             self.__cached_offsets[search_pattern] = offset
 
         return offset
 
-    @staticmethod
-    def __find_offset(search_pattern, search_range):
-        # Save currently selected thread to restore it after iteration over threads.
-        orig_thread = gdb.selected_thread()
+    PAGE_SIZE = 4096
 
+    @classmethod
+    def read_tls(cls, base, search_range, below):
+        """The bytes of the search_range bytes below (or above) base, as far
+        from base as they can be read, and the address of the first of them."""
         inferior = gdb.selected_inferior()
+        chunks = []
+        if below:
+            low, end = base - search_range, base
+            while end > low:
+                start = max(low, (end - 1) // cls.PAGE_SIZE * cls.PAGE_SIZE)
+                try:
+                    chunks.insert(0, bytes(inferior.read_memory(start, end - start)))
+                except gdb.error:
+                    break
+                end = start
+            return b''.join(chunks), end
+        start, high = base, base + search_range
+        while start < high:
+            end = min(high, (start // cls.PAGE_SIZE + 1) * cls.PAGE_SIZE)
+            try:
+                chunks.append(bytes(inferior.read_memory(start, end - start)))
+            except gdb.error:
+                break
+            start = end
+        return b''.join(chunks), base
+
+    @classmethod
+    def find_offset(cls, search_pattern, search_range):
+        """The offset of search_pattern from the TLS base, the one closest to
+        the base of all the threads, or None.  It reads the memory instead of
+        gdb's search_memory, which gives a wrong address when the range runs
+        into memory it cannot read (the main thread's TLS is near the start of
+        its mapping), and never looks farther than the readable part."""
         offset = None
-        for thread in inferior.threads():
-            thread.switch()
-
-            log("TlVarFindOffset.__find_offset: 0")
-            base = tls_base()
-            log("TlVarFindOffset.__find_offset: 1 tls_base={}".format(base))
-            log("TlVarFindOffset.__find_offset: 1 tls_base.type.code={}".format(base.type.code))
-            log("TlVarFindOffset.__find_offset: 1 tls_base.type.sizeof={}".format(base.type.sizeof))
-            base = int(tls_base())
-            log("TlVarFindOffset.__find_offset: 2 base={}".format(base))
-
-            # Thread-local variables resides in a region preceding base address of TLS.
-            addr = inferior.search_memory(base - search_range, search_range, search_pattern)
-            if addr is None:
-                continue
-
-            offset = addr - base
-
-            # Make search range for next searching less than the last found offset to make sure
-            # the next found (if any) will be closer to its TLS base.
-            search_range = -offset - 1
-
-        # Switch back to initially selected thread.
-        orig_thread.switch()
-
+        with SelectedThread():
+            for thread in gdb.selected_inferior().threads():
+                thread.switch()
+                try:
+                    base = int(tls_base())
+                    below = tls_below_base()
+                except gdb.error:
+                    continue
+                data, start = cls.read_tls(base, search_range, below)
+                pos = data.rfind(search_pattern) if below else data.find(search_pattern)
+                if pos < 0:
+                    continue
+                found = start + pos - base
+                if offset is None or abs(found) < abs(offset):
+                    offset = found
         return offset
 
 
@@ -2891,11 +2932,111 @@ See also:
         return cast_ptr(ref_val.type, tls_base(), offset).dereference()
 
 
-TlVarLike(TlVarFindOffset())
+tl_var_find_offset = TlVarFindOffset()
+TlVarLike(tl_var_find_offset)
+
+
+class ThreadLocal(object):
+    """A thread-local variable of tarantool (cord_ptr; since 3.7 also
+    tuple_formats and the like).
+
+    gdb reads one in the selected thread through libthread_db or, since gdb
+    16, on its own, but not always: there is no libthread_db for a core of
+    another system, and gdb's own lookup on a core finds the TLS of the main
+    thread only.  A variable is at the same offset from the thread pointer
+    in every thread, so then it is read there.  The offset comes from a
+    thread where gdb can tell the address of the variable or, if there is
+    none, from another variable of the same TLS block whose offset is known:
+    cord_ptr, found by its value in the main thread (&main_cord) with
+    $tl_var_find_offset, and the offsets of both within the block ('info
+    address')."""
+
+    __offsets = {}
+    __anchor = ('cord_ptr', '&main_cord')
+
+    def __init__(self, name):
+        self.name = name
+
+    @classmethod
+    def reset(cls, event=None):
+        cls.__offsets.clear()
+
+    def value(self):
+        try:
+            val = gdb.parse_and_eval(self.name)
+            val.fetch_lazy()
+            return val
+        except gdb.error:
+            pass
+        sym = gdb.lookup_global_symbol(self.name)
+        if sym is None and hasattr(gdb, 'lookup_static_symbol'):
+            sym = gdb.lookup_static_symbol(self.name)
+        if sym is None:
+            raise gdb.GdbError("No symbol \"{}\"".format(self.name))
+        return cast_ptr(sym.type, tls_base(), self.offset()).dereference()
+
+    def offset(self):
+        """The offset of the variable from the thread pointer."""
+        offset = self.__offsets.get(self.name)
+        if offset is None:
+            offset = self.__find_offset()
+            self.__offsets[self.name] = offset
+        return offset
+
+    def __find_offset(self):
+        with SelectedThread():
+            for thread in threads_from_selected():
+                thread.switch()
+                try:
+                    addr = gdb.parse_and_eval('&' + self.name)
+                    return int(addr.cast(gdb.lookup_type('long'))) - int(tls_base())
+                except gdb.error:
+                    continue
+        name, ref = self.__anchor
+        block = self.block_offset(self.name)
+        if block is not None:
+            if self.name == name:
+                offset = tl_var_find_offset.find_offset(self.pattern(ref), int(
+                    gdb.parameter(TlVarSearchRangeParam.param_name)))
+                if offset is not None:
+                    return offset
+            else:
+                anchor_block = self.block_offset(name)
+                if anchor_block is not None and anchor_block[1] == block[1]:
+                    return ThreadLocal(name).offset() - anchor_block[0] + block[0]
+        raise gdb.GdbError("Cannot read the thread-local variable {}: gdb finds no "
+                           "TLS for it in any thread and cannot tell its offset "
+                           "otherwise".format(self.name))
+
+    @staticmethod
+    def pattern(expr):
+        val = gdb.parse_and_eval(expr)
+        raw = val.cast(gdb.lookup_type('uint8_t').array(val.type.sizeof - 1))
+        return bytes(int(raw[i]) for i in range(val.type.sizeof))
+
+    @staticmethod
+    def block_offset(name):
+        """(offset in its TLS block, the objfile of the block) of a
+        thread-local variable, or None."""
+        try:
+            out = gdb.execute('info address {}'.format(name), False, True)
+        except gdb.error:
+            return None
+        m = re.search(r'thread-local variable at offset (0x[0-9a-f]+|\d+) '
+                      r'in the thread-local storage for `(.*)\'', out)
+        if m is None:
+            return None
+        return int(m.group(1), 0), m.group(2)
+
+
+gdb.events.new_objfile.connect(ThreadLocal.reset)
+if hasattr(gdb.events, 'clear_objfiles'):
+    gdb.events.clear_objfiles.connect(ThreadLocal.reset)
 
 
 def cord():
-    return find_value("cord_ptr") or gdb.parse_and_eval("$tl_var_like(&main_cord)")
+    """The cord of the selected thread."""
+    return ThreadLocal('cord_ptr').value()
 
 
 def fiber():
@@ -2906,6 +3047,8 @@ def fiber():
 class Cord(object):
     def __init__(self):
         self.__cord_ptr = cord()
+        if int(self.__cord_ptr) == 0:
+            raise gdb.GdbError("No cord in this thread (cord_ptr is NULL)")
 
     def fiber(self):
         return self.__cord_ptr["fiber"]

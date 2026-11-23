@@ -12,6 +12,7 @@
 
 import os
 import re
+import sys
 import unittest
 
 import harness as H
@@ -178,6 +179,28 @@ BOX_CMDS = [
     ('walk.{}'.format(i), 'tt-list-walk -fields fid -- main_cord.alive')
     for i in range(WALK)
 ] + [
+    # The thread-local functions; gdb's own TLS lookup (&cord_ptr) is
+    # the oracle, read live only.
+    ('tl.offset', 'print $tl_var_find_offset(&main_cord)'),
+    ('tl.offset.gdb', 'eval:(long)&cord_ptr - (long){}'.format(TLS_BASE)),
+    ('tl.like', 'print $tl_var_like(&main_cord)'),
+    ('tl.addr', 'print $tl_var_addr($tl_var_find_offset(&main_cord))'),
+    ('tl.addr.gdb', 'eval:(long)&cord_ptr'),
+    ('tl.short', 'print $tl_var_find_offset(&main_cord, 7)'),
+    ('tl.negative', 'print $tl_var_find_offset(&main_cord, -1)'),
+    ('tl.show', 'show tl-var-search-range'),
+    ('tl.threads', 'dbg-threads output $tl_var_like(&main_cord)'),
+    ('tl.threads.gdb', 'dbg-threads output cord_ptr'),
+    # The first word at the thread pointer (the TCB): is the TLS of the
+    # thread in the core?
+    ('threads.tp', 'dbg-threads output *(long *){}'.format(TLS_BASE)),
+    ('find', 'print $find((char *)&main_cord.fiber, 8, main_cord.fiber)'),
+    ('find.gdb', 'eval:(long)&main_cord.fiber'),
+    # Every thread: its cord and fibers.  The gdb side (cord_ptr) is
+    # read live only: a core may have no libthread_db.
+    ('threads.fibers', 'dbg-threads info tt-fibers'),
+    ('threads.cord', 'dbg-threads output cord_ptr->name'),
+    ('threads.alive', 'dbg-threads output $dbg_rlist_len(&cord_ptr->alive)'),
     # The fiber switch, last: it changes what the commands see.
     ('sleeper', 'eval "tt-fiber %d", $dbg_fiber_id("tt-sleeper")'),
     ('sleeper.fibers', 'info tt-fibers'),
@@ -218,6 +241,20 @@ BOX_CMDS = [
 
 BOX = Scenario('box', BOX_LUA, ['break lj_cf_print'], BOX_CMDS,
                prep=BOX_PREP, sources=SOURCES)
+
+# The same with gdb unable to read the thread-local variables (a core
+# with no libthread_db and a gdb before 16): the extension reads them at
+# their offset from the thread pointer.
+NOTLS_HIDDEN = 'cord_ptr,&cord_ptr,tuple_formats,&tuple_formats'
+NOTLS = BOX.variant('box-notls', sources=[H.HIDE_ENUMS] + SOURCES,
+                    gdb_env={'DBG_HIDE_ENUMS': NOTLS_HIDDEN}, cmds=[
+                        ('fibers', 'info tt-fibers'),
+                        ('fiber', 'tt-fiber'),
+                        ('tuple', 'print *$t'),
+                        ('threads.fibers', 'dbg-threads info tt-fibers'),
+                        ('threads.tp', 'dbg-threads output *(long *){}'
+                         .format(TLS_BASE)),
+                    ])
 
 
 def mp_text(v):
@@ -392,6 +429,135 @@ class TestFibers(DbgCase):
             fr = self.frames(key + '.bt')
             self.assertEqual(fr[0], (0, 'lj_cf_print'), key)
             self.assertIn('run_script_f', [f for _, f in fr], key)
+
+    def test_threads(self):
+        # In every thread the fibers of its own cord (sched, then the
+        # alive ones).
+        cords = per_thread(self.raw(BOX, 'threads.cord', 'live')['out'])
+        alive = per_thread(self.raw(BOX, 'threads.alive', 'live')['out'])
+        names = set()
+        for mode, fib in thread_outs(self, BOX, 'threads.fibers'):
+            if mode == 'live':
+                self.assertEqual(sorted(fib), sorted(cords))
+            for rank, text in fib.items():
+                self.assertNotIn('!error', text, (mode, rank, text))
+                rows = fiber_rows(text)
+                self.assertEqual(len(rows), int(alive[rank]) + 1,
+                                 (mode, rank, text))
+                self.assertIn((1, 'sched'),
+                              [(fid, n) for _, fid, n, _ in rows])
+                names.add(re.search(r'"([^"]*)"', cords[rank]).group(1))
+        self.assertIn('main', names)
+        self.assertIn('wal', names)
+
+
+def per_thread(text):
+    '''{rank: output} of a dbg-threads command.'''
+    parts = re.split(r'^### (\d+)\n', text, flags=re.M)[1:]
+    return dict((int(r), s) for r, s in zip(parts[::2], parts[1::2]))
+
+
+def thread_outs(case, scen, key):
+    '''[(mode, {rank: output})] of a dbg-threads command, the core one
+    without the threads whose TLS the core lost: gcore reads a mapping
+    whole, and a thread stack with a guard region (MADV_GUARD_INSTALL,
+    Linux 6.13+ with a recent glibc) cannot be read whole, so it is
+    written as zeroes.  The output of a thread in the core must be the
+    live one.'''
+    live = per_thread(case.raw(scen, key, 'live')['out'])
+    got = [('live', live)]
+    if 'core' in scen.modes():
+        core = per_thread(case.raw(scen, key, 'core')['out'])
+        tp = dict((m, per_thread(case.raw(scen, 'threads.tp', m)['out']))
+                  for m in ('live', 'core'))
+        lost = [r for r in tp['live'] if tp['core'].get(r) != tp['live'][r]]
+        if lost:
+            sys.stderr.write('\n{}: the core has no TLS of threads {} '
+                             '(gcore and guard regions), not checked\n'
+                             .format(key, lost))
+        core = dict((r, s) for r, s in core.items() if r not in lost)
+        for r, s in core.items():
+            case.assertEqual(s, live.get(r), '{} thread {}: the core output '
+                             'differs'.format(key, r))
+        got.append(('core', core))
+    return got
+
+
+class TestThreadLocal(DbgCase):
+    SCENARIOS = (BOX,)
+
+    def live(self, key):
+        return self.raw(BOX, key, 'live')['out']
+
+    def test_find_offset(self):
+        # The offset of cord_ptr, the variable that holds &main_cord in
+        # the main thread; nothing else printed.
+        self.assertEqual(value(self.out(BOX, 'tl.offset')),
+                         str(self.value(BOX, 'tl.offset.gdb')))
+        self.assertRegex(self.out(BOX, 'tl.offset'), r'^\$\d+ = -?\d+\n$')
+
+    def test_like(self):
+        self.assertRegex(value(self.out(BOX, 'tl.like')),
+                         r'^\(struct cord \*\) 0x[0-9a-f]+ <main_cord>$')
+        # In every thread: its own cord_ptr.
+        want = per_thread(self.live('tl.threads.gdb'))
+        self.assertGreater(len(want), 2)
+        for mode, got in thread_outs(self, BOX, 'tl.threads'):
+            for rank, s in got.items():
+                self.assertEqual(re.sub(r'^\(.*?\) ', '', s),
+                                 re.sub(r'^\(.*?\) ', '', want[rank]),
+                                 (mode, rank))
+
+    def test_addr(self):
+        self.assertEqual(value(self.out(BOX, 'tl.addr')),
+                         '(void *) 0x{:x}'.format(
+                             self.value(BOX, 'tl.addr.gdb')))
+
+    def test_bad_range(self):
+        for mode, err in self.errs(BOX, 'tl.short'):
+            self.assertEqual(err, 'Range of size 7 is not able to contain '
+                             'variable of size 8.', mode)
+        for mode, err in self.errs(BOX, 'tl.negative'):
+            self.assertEqual(err, 'Invalid range -1. It must be greater '
+                             'than zero.', mode)
+        self.assertEqual(self.out(BOX, 'tl.show').strip(),
+                         'Range for searching thread-local variables is '
+                         '65536')
+
+    def test_find(self):
+        self.assertEqual(value(self.out(BOX, 'find')),
+                         str(self.value(BOX, 'find.gdb')))
+
+
+class TestNoTLS(DbgCase):
+    '''gdb cannot read cord_ptr or tuple_formats: the commands work as
+    with it.'''
+    SCENARIOS = (BOX, NOTLS)
+
+    def rows(self, scen, key):
+        return [(fid, name) for _, fid, name, _ in
+                fiber_rows(self.out(scen, key))]
+
+    def test_fibers(self):
+        self.assertEqual(self.rows(NOTLS, 'fibers'), self.rows(BOX, 'fibers'))
+        self.assertEqual(self.out(NOTLS, 'fiber'), self.out(BOX, 'fiber'))
+        self.assertNoPyError(NOTLS)
+
+    def test_threads(self):
+        want = dict((r, [(f, n) for _, f, n, _ in fiber_rows(s)])
+                    for r, s in per_thread(self.raw(
+                        BOX, 'threads.fibers', 'live')['out']).items())
+        for mode, got in thread_outs(self, NOTLS, 'threads.fibers'):
+            for rank, text in got.items():
+                self.assertNotIn('!error', text, (mode, rank))
+                self.assertEqual([(f, n) for _, f, n, _ in fiber_rows(text)],
+                                 want[rank], (mode, rank))
+
+    def test_tuple(self):
+        self.assertEqual(re.sub(r'0x[0-9a-f]+', 'X',
+                                value(self.out(NOTLS, 'tuple'))),
+                         re.sub(r'0x[0-9a-f]+', 'X',
+                                value(self.out(BOX, 'tuple'))))
 
 class TestTuple(DbgCase):
     SCENARIOS = (BOX,)
