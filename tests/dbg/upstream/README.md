@@ -41,6 +41,23 @@ about `lj-gctop`, not upstream yet, and lets the lj-stack tests see any
 value in the red zone: LuaJIT puts metamethod frames there and clears
 it only in the atomic GC phase.
 
+`DBG_DEBUGGER=lldb` runs the same file in its lldb mode, through
+`lldb-tarantool` (lldb, or `$DBG_LLDB`): it puts the same options in
+the `settings set target.run-args` line of the commands of each test,
+and does not pass SIGALRM to tarantool (`process handle`): the 10 ms
+timer of tarantool's low-resolution clock keeps one pending in a
+stopped process, and lldb's `n` then stops where it began. The upstream
+file skips the deferred loading in lldb; two more tests are skipped
+there, both for where lldb puts a breakpoint by name: at the entry of
+`lj_cf_dofile`, where `fname` is not set yet after one `n`
+(`TestLJStr`), and, for the inlined `gc_sweep_str_chain`, at the start
+of its range in the cold part of `gc_onestep`, never reached
+(`TestGCStateSweepString`).
+
+```
+LJBT_TARANTOOL=... DBG_DEBUGGER=lldb DBG_LLDB=lldb-22 python3 tests/dbg/upstream/run_luajit.py
+```
+
 ## Tarantool
 
 `test_gdb.py` of PR #13078 is a pytest file: each test runs gdb with

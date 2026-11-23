@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+# The debugger command of the upstream tests run against tarantool in
+# lldb: lldb (or $DBG_LLDB) with the options of $DBG_UPSTREAM_ARGS put
+# in front of the inferior arguments, as gdb-tarantool does with gdb
+# (see tarantool.gdb; lldb has no hook-run).  The upstream tests take it
+# as DEBUGGER_COMMAND and tell the debugger by "lldb" in the name.
+#
+# They give the commands in a file (--source FILE) that sets the
+# arguments with `settings set target.run-args ...`: a copy of the file
+# with the options in that line is given to lldb instead.
+#
+# Also, after `target create`, SIGALRM is not passed to tarantool: its
+# low-resolution clock (an ITIMER_REAL of 10 ms) keeps one pending in a
+# stopped process, and the `n` of every test then stops where it began
+# (the handler runs, the breakpoint at the pc is hit again), as `n` does
+# in lldb in any program with such a timer.  gdb steps over it.
+import os
+import sys
+import tempfile
+
+PRE = os.environ.get('DBG_UPSTREAM_ARGS',
+                     '-e "jit.opt.start(\'hotloop=56\') jit.flush()"')
+SET_ARGS = 'settings set target.run-args '
+SIGNALS = 'process handle SIGALRM --pass false --stop false --notify false'
+
+
+def main():
+    lldb = os.environ.get('DBG_LLDB', 'lldb')
+    args = sys.argv[1:]
+    tmp = None
+    if '--source' in args:
+        i = args.index('--source') + 1
+        with open(args[i]) as fh:
+            lines = fh.read().split('\n')
+        out = []
+        for s in lines:
+            if PRE and s.startswith(SET_ARGS):
+                s = SET_ARGS + PRE + ' ' + s[len(SET_ARGS):]
+            out.append(s)
+            if s.startswith('target create '):
+                out.append(SIGNALS)
+        lines = out
+        fd, tmp = tempfile.mkstemp(prefix='lldb-tarantool-', suffix='.cmd')
+        with os.fdopen(fd, 'w') as fh:
+            fh.write('\n'.join(lines))
+        args[i] = tmp
+    try:
+        sys.stdout.flush()
+        rc = os.spawnvp(os.P_WAIT, lldb, [lldb] + args)
+    finally:
+        if tmp:
+            os.unlink(tmp)
+    sys.exit(rc if rc >= 0 else 128 - rc)
+
+
+main()

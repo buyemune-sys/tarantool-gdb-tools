@@ -6,14 +6,16 @@
 # Environment: LJBT_TARANTOOL (required), DBG_LUAJIT_DBG (the extension
 # under test, default: luajit_dbg.py of this repo; an old luajit-gdb.py
 # works too), DBG_UPSTREAM_TIMEOUT (seconds per gdb run, default 60; the
-# upstream 10 is short for lj-gc on a loaded machine), DBG_GDB, TMPDIR.
-# The upstream file reads its settings from the environment; this sets
-# them:
+# upstream 10 is short for lj-gc on a loaded machine), DBG_DEBUGGER
+# (gdb, the default, or lldb: the upstream file runs either), DBG_GDB,
+# DBG_LLDB, TMPDIR.  The upstream file reads its settings from the
+# environment; this sets them:
 #
 #   LUAJIT_TEST_BINARY       the tarantool binary
 #   DEBUGGER_EXTENSION_PATH  a directory with luajit_dbg.py, a link to
 #                            the extension under test
-#   DEBUGGER_COMMAND         gdb-tarantool, gdb with tarantool.gdb
+#   DEBUGGER_COMMAND         gdb-tarantool, gdb with tarantool.gdb, or
+#                            lldb-tarantool
 #
 # Tests that cannot pass against a tarantool binary whatever the
 # extension does are skipped with the reason (tarantool_skips()); the
@@ -46,6 +48,14 @@ OPTIMIZED_OUT = ('the arm64 build of {} has no location for fname of '
                  'lj_cf_dofile at the stop of the test: "value has been '
                  'optimized out"')
 NO_FNAME_ARM64 = [(3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6)]
+# lldb places a breakpoint by name otherwise than gdb (3.9.0 x86_64,
+# lldb 18 and 22).
+LLDB_COLD = ('lldb puts the breakpoint of gc_sweep_str_chain, inlined, at '
+             'the start of its range in the cold part of gc_onestep (gdb: '
+             'lj_gc.c:425 in the hot part), which the test never reaches')
+LLDB_ENTRY = ('lldb stops at the entry of lj_cf_dofile, gdb after its '
+              'prologue: after the one `n` of the test fname is not set '
+              'yet, "variable not available"')
 
 # The upstream file takes LJ_DUALNUM from ffi.abi('dualnum'), an option
 # the LuaJIT of 3.0, 3.1 and 3.4 does not know (lib_ffi.c of their
@@ -59,7 +69,7 @@ UPSTREAM_DUALNUM = ('IS_DUALNUM = execute_process([\n'
                     ']).strip() == \'true\'\n')
 
 
-def tarantool_skips(version, arch):
+def tarantool_skips(version, arch, debugger='gdb'):
     '''{class name: why it cannot pass against this tarantool}.
     tests/dbg/test_luajit.py has these checks in the form tarantool
     allows.'''
@@ -81,6 +91,9 @@ def tarantool_skips(version, arch):
     if arch == 'arm64' and version[:2] in NO_FNAME_ARM64:
         skips['TestLJStr'] = OPTIMIZED_OUT.format(
             '.'.join(map(str, version)))
+    if debugger == 'lldb':
+        skips['TestGCStateSweepString'] = LLDB_COLD
+        skips['TestLJStr'] = LLDB_ENTRY
     return skips
 
 
@@ -140,12 +153,15 @@ def main():
     ext = os.path.abspath(os.environ.get('DBG_LUAJIT_DBG') or
                           os.path.join(ROOT, 'luajit_dbg.py'))
     timeout = int(os.environ.get('DBG_UPSTREAM_TIMEOUT', 60))
+    debugger = os.environ.get('DBG_DEBUGGER', 'gdb')
+    if debugger not in ('gdb', 'lldb'):
+        sys.exit('DBG_DEBUGGER is gdb or lldb, not ' + debugger)
     extdir = tempfile.mkdtemp(prefix='dbg-upstream-')
     os.symlink(ext, os.path.join(extdir, 'luajit_dbg.py'))
     os.environ.update({
         'LUAJIT_TEST_BINARY': tarantool,
         'DEBUGGER_EXTENSION_PATH': extdir,
-        'DEBUGGER_COMMAND': os.path.join(HERE, 'gdb-tarantool'),
+        'DEBUGGER_COMMAND': os.path.join(HERE, debugger + '-tarantool'),
         'PYTHONDONTWRITEBYTECODE': '1',
     })
     try:
@@ -162,7 +178,8 @@ def main():
                 mod.TestLoad.pattern = mod.TestLoad.pattern.replace(
                     gco, gco + r'lj-gctop command initialized\n')
         red_zone_any_value(mod)
-        for name, why in tarantool_skips(*tarantool_info(tarantool)).items():
+        for name, why in tarantool_skips(*tarantool_info(tarantool),
+                                         debugger=debugger).items():
             setattr(mod, name, unittest.skip(why)(getattr(mod, name)))
         prog = unittest.main(module=mod, argv=[sys.argv[0]] + sys.argv[1:],
                              exit=False, verbosity=2)
