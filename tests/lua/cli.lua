@@ -98,4 +98,11 @@ sleeper:name('cli-sleeper')
 fiber.yield()
 stop(9)
 
+-- 11: the next stop, in another fiber: lj-bt follows the running fiber,
+-- not the one tt-fiber picked at 9; then tt-fiber and stepi.
+local other = fiber.new(function() stop(11) end)
+other:name('cli-other')
+other:set_joinable(true)
+other:join()
+
 os.exit(0)

@@ -133,6 +133,8 @@ class Cli(object):
             self.arm('iproto_connection_on_input', 'iproto')
         elif n == 9:
             self.sleeper(n)
+        elif n == 11:
+            self.other(n)
 
     def arm(self, where, what):
         try:
@@ -148,14 +150,19 @@ class Cli(object):
             # Stopped in the iproto thread; the tx thread runs no Lua now.
             self.threads(0)
 
+    def sleeper_fid(self):
+        for f in M.Cord().fibers():
+            if f['name'].string() == 'cli-sleeper':
+                return int(f['fid'])
+        return None
+
     def sleeper(self, n):
+        # tarantool-gdb.py is loaded here, at a stop: its selection is of
+        # this stop (stop 11 checks that it does not outlive it).
         if not self.tt:
             return
         run('ljbt-probe-tt ' + self.tt)
-        fid = None
-        for f in M.Cord().fibers():
-            if f['name'].string() == 'cli-sleeper':
-                fid = int(f['fid'])
+        fid = self.sleeper_fid()
         if fid is None:
             self.rec(n, 'sleeper', error='no cli-sleeper fiber')
             return
@@ -164,10 +171,22 @@ class Cli(object):
             self.rec(n, 'all-fibers-error', error=aerr)
         run('tt-fiber {}'.format(fid))
         self.snapshot(n, 'sleeper')
-        run('stepi')
-        self.snapshot(n, 'sleeper-stepi')
         self.rec(n, 'all-fibers', fid=fid,
                  docs=json.loads(allf) if allf else None)
+
+    def other(self, n):
+        # Stopped in cli-other after a continue: the running fiber again;
+        # then tt-fiber and a stepi, which keeps the selection.
+        if not self.tt:
+            return
+        self.snapshot(n, 'other')
+        fid = self.sleeper_fid()
+        if fid is None:
+            self.rec(n, 'sleeper-stepi', error='no cli-sleeper fiber')
+            return
+        run('tt-fiber {}'.format(fid))
+        run('stepi')
+        self.snapshot(n, 'sleeper-stepi')
 
     def loop(self):
         cmd = 'run'

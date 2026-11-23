@@ -196,7 +196,7 @@ class CliTest(unittest.TestCase):
     @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
     def test_sleeper_fiber(self):
         a = self.one(9, 'sleeper')
-        b = self.one(9, 'sleeper-stepi')
+        b = self.one(11, 'sleeper-stepi')
         for r in (a, b):
             self.assertIn('cli-sleeper', r['doc']['header'])
             self.assertIn('(not running)', r['doc']['header'])
@@ -212,6 +212,21 @@ class CliTest(unittest.TestCase):
         for d in allf['docs']:
             if d['bt'] is not None:
                 self.assertEqual(C.warnings(d['bt']), [], d['fiber'])
+
+    @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
+    def test_next_stop_other_fiber(self):
+        # tarantool-gdb.py came at stop 9, tt-fiber picked cli-sleeper
+        # there; stop 11 is in cli-other: lj-bt and bt show the running
+        # fiber, from frame #0, not the selection of the last stop.
+        r = self.one(11, 'other')
+        self.assertIn('cli-other', r['doc']['header'])
+        self.assertIn('(running)', r['doc']['header'])
+        self.assertEqual(r['doc']['frames'][0]['level'], 0)
+        self.assertEqual(r['doc']['frames'][0]['name'],
+                         'lbox_session_exists')
+        self.assertEqual(marks(r['text']), [])
+        self.assertTrue(r['text_lua'])
+        self.assertEqual(r['bt_lua'], r['text_lua'])
 
 
 if __name__ == '__main__':

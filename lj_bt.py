@@ -340,9 +340,11 @@ def ljbt_reset(event=None):
 
 
 def ljbt_running_fiber():
-    fib = getattr(ljbt_lj, 'fiber', None)
+    '''The fiber running in the selected thread, cord_ptr->fiber, as
+    fiber() of tarantool-gdb.py reads it (but without it loaded); None
+    where there is none.'''
     try:
-        return int(fib()) if fib is not None else None
+        return int(ljbt_eval('cord_ptr')['fiber'])
     except Exception:
         return None
 
@@ -354,18 +356,20 @@ def ljbt_on_stop(event):
     # running when its unwinder was created) across `continue`: after a
     # stop in another fiber `bt` and lj-bt would unwind a stale saved
     # context.  So when the running fiber changed since the last stop, the
-    # selection goes back to it; a stepi within one fiber keeps it.
+    # selection goes back to it; a stepi within one fiber keeps it.  The
+    # running fiber is recorded at every stop, tarantool-gdb.py loaded or
+    # not: it is usually loaded at a stop, and its selection is of that
+    # stop, not of the next one.
+    cur = ljbt_running_fiber()
     FU = getattr(ljbt_lj, 'FiberUnwinder', None)
-    if FU is not None:
-        cur = ljbt_running_fiber()
-        # None: tarantool-gdb.py came after the last stop, nothing is
-        # known to be stale.
-        if LJBT_STATE['fiber'] is not None and cur != LJBT_STATE['fiber']:
-            try:
-                FU.instance().reset_fiber()
-            except Exception:
-                pass
-        LJBT_STATE['fiber'] = cur
+    # None: not known at the last stop, nothing is known to be stale.
+    if FU is not None and LJBT_STATE['fiber'] is not None and \
+            cur != LJBT_STATE['fiber']:
+        try:
+            FU.instance().reset_fiber()
+        except Exception:
+            pass
+    LJBT_STATE['fiber'] = cur
     try:
         ljbt_conf()
         gdb.invalidate_cached_frames()
@@ -2640,6 +2644,8 @@ if LJBTFrameDecorator is not None:
 
 
 LJBTCommand()
+# Sourced at a stop: that stop's fiber is the one a later stop compares to.
+LJBT_STATE['fiber'] = ljbt_running_fiber()
 gdb.events.stop.connect(ljbt_on_stop)
 gdb.events.exited.connect(ljbt_reset)
 gdb.events.new_objfile.connect(ljbt_reset)
