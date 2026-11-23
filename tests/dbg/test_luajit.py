@@ -1158,7 +1158,12 @@ trace(1)
 ''', ['break lj_cf_print'], [
     ('state', 'lj-state'),
     ('jslots', 'lj-jslots'),
-    ('jslots.n', 'eval:{0}.baseslot + {0}.maxslot'.format(JS)),
+    # One GG_State per expression: the DWARF of 3.0.2 has two struct
+    # global_State (two units), and lldb 22 finds the second cast of an
+    # expression to it ambiguous ("reference to 'global_State' is
+    # ambiguous").
+    ('jslots.base', 'eval:{}.baseslot'.format(JS)),
+    ('jslots.max', 'eval:{}.maxslot'.format(JS)),
     ('cur', 'lj-trace &{}.cur'.format(JS)),
 ], setup=['delete',
           # The first trace_stop of the script's own function.
@@ -1207,7 +1212,8 @@ class TestTraceStop(DbgCase):
 
     def test_jslots(self):
         lines = self.out(TRACE_STOP, 'jslots').rstrip('\n').split('\n')
-        n = self.value(TRACE_STOP, 'jslots.n')
+        n = self.value(TRACE_STOP, 'jslots.base') + \
+            self.value(TRACE_STOP, 'jslots.max')
         first = 1 + (1 if H.IS_GC64 else 0)
         self.assertEqual(len(lines), n - first)
         nums = []
