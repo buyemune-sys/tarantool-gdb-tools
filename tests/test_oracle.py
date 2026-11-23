@@ -114,6 +114,26 @@ class OracleMixin(object):
         self.assertNotIn('lj-bt frame filter:', rec['bt_filter'])
         self.assertRegex(rec['bt_filter'], r'(?m)^    \[lua\] \S+:\d+ in ')
 
+    def test_forms_agree(self):
+        # At every stop the three forms say the same: the Lua lines and
+        # the marks of the filtered `bt` are those of the lj-bt text, the
+        # text has a #N.k line per Lua entry of the JSON and a "!!" line
+        # per mark of it.
+        for ch in self.chains:
+            with self.subTest(seq=ch.seq, chain=ch.transitions):
+                rec = self.stops[ch.seq][0]
+                text, doc = rec['text'], rec['ljbt']
+                self.assertTrue(C.lua_lines(text), text)
+                self.assertEqual(C.lua_lines(rec['bt_filter']),
+                                 C.lua_lines(text))
+                self.assertEqual(C.mark_lines(rec['bt_filter']),
+                                 C.mark_lines(text))
+                self.assertEqual(
+                    len(re.findall(r'(?m)^#\d+\.\d+ ', text)),
+                    sum(len(f['lua']) for f in doc['frames']))
+                self.assertEqual(len(C.mark_lines(text)),
+                                 len(C.warnings(doc)))
+
     def test_tail_heuristic(self):
         # ['tail', 'tail', 'call']: F2_0 and F2_1 are gone; the CALL in D
         # still says F2_0.
