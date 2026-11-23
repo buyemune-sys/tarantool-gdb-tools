@@ -145,11 +145,21 @@ def run_gdb(wd, plan, tag, preexec=None, timeout=180):
 
 
 def stacks(res):
+    '''The JSON of dbg-stacks.  On a core gdb 15 and 17 put a warning
+    about the size of .reg-xstate before it for every thread whose
+    registers dbg-stacks reads (ubuntu-24.04 and 26.04, CI run
+    45154577020): harness.py takes those out, and nothing else may be
+    there.'''
     r = res['cmds']['stacks']
     if r['err']:
         raise RuntimeError('dbg-stacks: {}\n{}'.format(r['err'],
                                                        res['log'][-3000:]))
-    return json.loads(r['out'])
+    out = H.strip_core_warnings(r['out'])
+    try:
+        return json.loads(out)
+    except ValueError as e:
+        raise RuntimeError('dbg-stacks printed no JSON ({}):\n{}'.format(
+            e, out[:3000]))
 
 
 def label(t):
@@ -308,6 +318,31 @@ class TestThreadStacks(unittest.TestCase):
         if 'kernel' not in self.cores:
             self.skipTest(self.no_kernel_core)
         self.assertKept('kernel', exact=False)
+
+
+class TestStacksOutput(unittest.TestCase):
+    '''The output of dbg-stacks as gdb gives it, without gdb: the
+    gcore.json of the ubuntu-24.04 job of CI run 45154577020 (gdb 15.1),
+    shortened, and the wording of gdb 17.'''
+
+    JSON = '{"gdb": "15.1", "pid": 2724, "threads": []}\n'
+
+    def res(self, out):
+        return {'cmds': {'stacks': {'out': out, 'err': None}}, 'log': ''}
+
+    def test_xstate_warnings(self):
+        for warn in ("warning: Unexpected size of section "
+                     "`.reg-xstate/{}' in core file.\n",
+                     "warning: Section `.reg-xstate/{}' in core file too "
+                     "small.\n"):
+            out = ''.join(warn.format(n) for n in (2729, 2730, 2731))
+            self.assertEqual(stacks(self.res(out + self.JSON)),
+                             json.loads(self.JSON))
+
+    def test_other_output(self):
+        # Anything else before the JSON is not taken out.
+        with self.assertRaisesRegex(RuntimeError, 'printed no JSON'):
+            stacks(self.res('warning: something else\n' + self.JSON))
 
 
 if __name__ == '__main__':
