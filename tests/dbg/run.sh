@@ -7,6 +7,8 @@
 #   luajit    luajit_dbg.py: every command live and on a core (default)
 #   upstream  the vendored LuaJIT debugger tests (upstream/luajit), run
 #             against tarantool by upstream/run_luajit.py
+#   tarantool tarantool-gdb.py: every command and pretty-printer live
+#             and on a core
 #   upstream-tarantool
 #             the vendored tests of tarantool's tools/tarantool-gdb.py
 #             (upstream/tarantool), run with pytest by
@@ -32,7 +34,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -z "$groups" ] && groups=luajit
-[ "$groups" = " all" ] && groups="luajit upstream upstream-tarantool"
+[ "$groups" = " all" ] && groups="luajit upstream tarantool upstream-tarantool"
 cd "$here" || exit 1
 export PYTHONDONTWRITEBYTECODE=1
 rc=0
@@ -41,6 +43,7 @@ for g in $groups; do
     case $g in
     luajit) python3 -m unittest -v "$@" test_luajit || rc=1 ;;
     upstream) python3 upstream/run_luajit.py "$@" || rc=1 ;;
+    tarantool) python3 -m unittest -v "$@" test_tarantool || rc=1 ;;
     upstream-tarantool) python3 upstream/run_tarantool.py "$@" || rc=1 ;;
     *) echo "unknown group: $g" >&2; exit 2 ;;
     esac
