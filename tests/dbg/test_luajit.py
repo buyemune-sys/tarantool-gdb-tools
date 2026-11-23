@@ -16,8 +16,8 @@ from harness import DbgCase, Scenario, G, GG, gcval, mref
 RX_ADDR = r'0x[0-9a-f]+'
 NUM = 'integer' if H.IS_DUALNUM else 'number'
 COMMANDS = ['lj-arch', 'lj-bc', 'lj-ctype', 'lj-func', 'lj-gc', 'lj-gco',
-            'lj-ir', 'lj-jslots', 'lj-proto', 'lj-stack', 'lj-state',
-            'lj-str', 'lj-tab', 'lj-trace', 'lj-tv']
+            'lj-gctop', 'lj-ir', 'lj-jslots', 'lj-proto', 'lj-stack',
+            'lj-state', 'lj-str', 'lj-tab', 'lj-trace', 'lj-tv']
 ARG_COMMANDS = ['lj-bc', 'lj-ctype', 'lj-func', 'lj-gco', 'lj-ir',
                 'lj-proto', 'lj-str', 'lj-tab', 'lj-trace', 'lj-tv']
 
@@ -692,6 +692,101 @@ class TestFastFunctionUnknown(DbgCase):
             for n in (242, 253):
                 self.assertEqual(self.out(FFUNKNOWN, c + str(n)),
                                  'fast function unknown (#{})\n'.format(n))
+
+
+# lj-gctop ##########################################################
+
+# Five objects far larger than anything of tarantool's own, each made
+# with the GC stopped between two collectgarbage('count'): the
+# difference is what it took (a coroutine also has the closure of its
+# recursion and an upvalue).
+GCTOP = Scenario('gctop', '''
+local ffi = require('ffi')
+local tnew = require('table.new')
+local function delta(f, ...)
+    local before = collectgarbage('count')
+    local v = f(...)
+    return v, (collectgarbage('count') - before) * 1024
+end
+local function deep(n)
+    local function r(k)
+        if k == 0 then coroutine.yield() return 0 end
+        return 1 + r(k - 1)
+    end
+    return r(n)
+end
+local function thread(n)
+    local co = coroutine.create(deep)
+    coroutine.resume(co, n)
+    return co
+end
+''' + QUIET_GC + '''
+local buf, dbuf = delta(ffi.new, 'char[?]', 3000000)
+local str = ffi.string(buf, 2000000)
+local cd, dcd = delta(ffi.new, 'struct { char a[1500000]; }')
+local tab, dtab = delta(tnew, 150000, 0)
+jit.off()                       -- no trace of the recursion
+local co, dco = delta(thread, 10000)
+jit.on()
+ORACLE.sizes = {dbuf, -1, dcd, dtab, dco}
+oracle_write()
+print(buf, str, cd, tab, co)
+''', ['break lj_cf_print'], [
+    ('top5', 'lj-gctop 5'),
+    ('top', 'lj-gctop'),
+    ('top1', 'lj-gctop 1'),
+    ('bad', 'lj-gctop x'),
+    ('zero', 'lj-gctop 0'),
+    ('count', 'eval:$dbg_gclen({0}->gc.root, 0) + '
+     '$dbg_gclen({0}->gc.mmudata, 1) + {0}->strnum'.format(G())),
+    ('total', 'eval:{}->gc.total'.format(G())),
+    ('str.size', 'eval:sizeof(GCstr) + ((GCstr *){})->len + 1'.format(
+        gcval(base(1)))),
+] + [('gco%d' % i, 'lj-gco ' + gcval(base(i))) for i in range(5)])
+RX_GCTOP = re.compile(r'^(\d+) GC objects, (\d+) bytes; the (\d+) largest:$')
+
+
+class TestGCTop(DbgCase):
+    SCENARIOS = (GCTOP,)
+
+    def test_top(self):
+        lines = self.out(GCTOP, 'top5').rstrip('\n').split('\n')
+        m = RX_GCTOP.match(lines[0])
+        self.assertIsNotNone(m, lines[0])
+        # Every object: the lists of the GC and the strings.
+        self.assertEqual(int(m.group(1)), self.value(GCTOP, 'count'))
+        self.assertLess(int(m.group(2)), self.value(GCTOP, 'total'))
+        self.assertEqual(int(m.group(3)), 5)
+        sizes = GCTOP.oracle()['sizes']
+        sizes[1] = self.value(GCTOP, 'str.size')    # see sizestring()
+        want = sorted(((sizes[i], self.out(GCTOP, 'gco%d' % i).rstrip('\n'))
+                       for i in range(5)), reverse=True)
+        got = []
+        for s in lines[1:]:
+            m = re.match(r'^(\d+) bytes: (.*)$', s)
+            self.assertIsNotNone(m, s)
+            got.append((int(m.group(1)), m.group(2)))
+        self.assertEqual([o for _, o in got], [o for _, o in want])
+        for (size, obj), (wsize, _) in zip(got, want):
+            # The thread: plus the closure and the upvalue of deep().
+            slack = 128 if obj.startswith('thread') else 0
+            self.assertLessEqual(abs(size - wsize), slack, obj)
+        self.assertNoPyError(GCTOP)
+
+    def test_amount(self):
+        top = self.out(GCTOP, 'top').rstrip('\n').split('\n')
+        self.assertEqual(RX_GCTOP.match(top[0]).group(3), '10')
+        self.assertEqual(len(top), 11)
+        sizes = [int(s.split()[0]) for s in top[1:]]
+        self.assertEqual(sizes, sorted(sizes, reverse=True))
+        top5 = self.out(GCTOP, 'top5').rstrip('\n').split('\n')
+        self.assertEqual(top[1:6], top5[1:])
+        self.assertEqual(self.out(GCTOP, 'top1').rstrip('\n').split('\n')[1],
+                         top5[1])
+        self.assertEqual(self.errs(GCTOP, 'bad')[0][1],
+                         'Amount must be a number: "x"')
+        self.assertEqual(self.errs(GCTOP, 'zero')[0][1],
+                         'Amount must be positive: "0"')
 
 
 # lj-ctype and the cdata of lj-tv ##################################

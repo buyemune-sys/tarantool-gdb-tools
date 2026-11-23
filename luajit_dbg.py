@@ -5,6 +5,7 @@
 # `command script import <path-to-repo>/src/luajit_dbg.py'
 
 import abc
+import heapq
 import re
 import struct
 import sys
@@ -2223,6 +2224,140 @@ def dump_gc(g):
     return '\n'.join(map(lambda s: '\t' + s, stats))
 
 
+# The size of a GC object: what the free function of its type frees
+# (gc_freefunc of lj_gc.c).
+
+def gco_size_str(gcobj):
+    # sizestring() of lj_obj.h.
+    return dbg.sizeof('GCstr') + int(dbg.cast('GCstr *', gcobj)['len']) + 1
+
+
+def gco_size_upval(gcobj):
+    return dbg.sizeof('GCupval')
+
+
+def gco_size_thread(gcobj):
+    # lj_state_free(): the stack and the lua_State.
+    stacksize = int(dbg.cast('lua_State *', gcobj)['stacksize'])
+    return dbg.sizeof('lua_State') + stacksize * dbg.sizeof('TValue')
+
+
+def gco_size_proto(gcobj):
+    return int(dbg.cast('GCproto *', gcobj)['sizept'])
+
+
+def gco_size_func(gcobj):
+    # sizeLfunc() and sizeCfunc() of lj_obj.h.
+    func = dbg.cast('GCfuncC *', gcobj)
+    nupvalues = int(func['nupvalues'])
+    if int(func['ffid']) == 0:
+        return dbg.sizeof('GCfuncL') + \
+            (nupvalues - 1) * dbg.sizeof('GCRef')
+    return dbg.sizeof('GCfuncC') + (nupvalues - 1) * dbg.sizeof('TValue')
+
+
+def gco_size_trace(gcobj):
+    # lj_trace_free().
+    trace = dbg.cast('GCtrace *', gcobj)
+    return ((dbg.sizeof('GCtrace') + 7) & ~7) + \
+        (int(trace['nins']) - int(trace['nk'])) * dbg.sizeof('IRIns') + \
+        int(trace['nsnap']) * dbg.sizeof('SnapShot') + \
+        int(trace['nsnapmap']) * dbg.sizeof('SnapEntry')
+
+
+def gco_size_cdata(gcobj):
+    # lj_cdata_free(): a variable-length one (cdataisv()) or the size of
+    # its C type.
+    cdata = dbg.cast('GCcdata *', gcobj)
+    if int(cdata['marked']) & 0x80:
+        cdatav = dbg.cast('GCcdataVar *', dbg.cast('char *', cdata) -
+                          dbg.sizeof('GCcdataVar'))
+        return int(cdatav['len']) + int(cdatav['extra'])
+    cts = ctype_ctsG(G(L()))
+    ctype = ctype_get(cts, cdata['ctypeid'])
+    while ctype_type(ctype['info']) == CT_ATTRIB:
+        ctype = ctype_child(cts, ctype)
+    if ctype_type(ctype['info']) <= CT_HASSIZE:
+        size = int(ctype['size'])
+    else:
+        size = 8 if LJ_64 else 4  # CTSIZE_PTR.
+    return dbg.sizeof('GCcdata') + size
+
+
+def gco_size_tab(gcobj):
+    # lj_tab_free(): the hash part, the array part unless colocated, the
+    # GCtab with the colocated array.
+    table = dbg.cast('GCtab *', gcobj)
+    asize, hmask = int(table['asize']), int(table['hmask'])
+    colo = int(table['colo'])
+    size = dbg.sizeof('Node') * (hmask + 1) if hmask > 0 else 0
+    if asize > 0 and colo <= 0:
+        size += dbg.sizeof('TValue') * asize
+    return size + dbg.sizeof('GCtab') + dbg.sizeof('TValue') * (colo & 0x7f)
+
+
+def gco_size_udata(gcobj):
+    # sizeudata() of lj_obj.h.
+    return dbg.sizeof('GCudata') + int(dbg.cast('GCudata *', gcobj)['len'])
+
+
+gco_sizes = {
+    'LJ_TSTR':    gco_size_str,
+    'LJ_TUPVAL':  gco_size_upval,
+    'LJ_TTHREAD': gco_size_thread,
+    'LJ_TPROTO':  gco_size_proto,
+    'LJ_TFUNC':   gco_size_func,
+    'LJ_TTRACE':  gco_size_trace,
+    'LJ_TCDATA':  gco_size_cdata,
+    'LJ_TTAB':    gco_size_tab,
+    'LJ_TUDATA':  gco_size_udata,
+}
+
+
+def gco_size(gcobj):
+    return gco_sizes[typenames(i2notu32(gcobj['gch']['gct']))](gcobj)
+
+
+def gc_objects(g):
+    '''Every GC object: the root list (with the userdata after the main
+    thread), the ring of the ones waiting for their finalizers and the
+    strings, which are in the chains of the string hash only.'''
+    obj = gcref(g['gc']['root'])
+    while obj:
+        yield obj
+        obj = gcref(obj['gch']['nextgc'])
+    last = gcref(g['gc']['mmudata'])
+    obj = last
+    while obj:
+        obj = gcref(obj['gch']['nextgc'])
+        yield obj
+        if obj == last:
+            break
+    strhash = g['strhash']
+    for i in range(int(g['strmask']) + 1):
+        obj = gcref(strhash[i])
+        while obj:
+            yield obj
+            obj = gcref(obj['gch']['nextgc'])
+
+
+def dump_gctop(g, amount):
+    count, total, top = 0, 0, []
+    for gcobj in gc_objects(g):
+        size = gco_size(gcobj)
+        count += 1
+        total += size
+        # The order of the visit breaks ties.
+        heapq.heappush(top, (size, -count, gcobj))
+        if len(top) > amount:
+            heapq.heappop(top)
+    dump = ['{count} GC objects, {total} bytes; the {n} largest:'.format(
+        count=count, total=total, n=len(top))]
+    dump += ['{size} bytes: {obj}'.format(size=size, obj=dump_gcobj(gcobj))
+             for size, _, gcobj in sorted(top, reverse=True)]
+    return '\n'.join(dump)
+
+
 def proto_loc(proto):
     return '{chunk}:{firstline}'.format(
         chunk=strdata(dbg.cast('GCstr *', gcval(proto['chunkname']))),
@@ -2968,6 +3103,34 @@ The command requires no args and dumps current GC stats:
         ))
 
 
+class LJGCTop(dbg.LJBase):
+    '''
+lj-gctop [<amount>]
+
+The command walks every GC object (the root list, the objects waiting
+for finalizers and the strings) and dumps the number of objects, their
+total size and the <amount> (10 by default) largest of them, the
+largest first:
+
+<size> bytes: <GCobj>
+
+<size>: The size of the object as the GC frees it, with its stack,
+        array and hash parts, upvalues, payload
+<GCobj>: See help lj-gco for more info
+
+The walk takes a while on a big heap: some seconds per million objects.
+    '''
+
+    def execute(self, arg):
+        try:
+            amount = int(arg) if arg else 10
+        except ValueError:
+            raise dbg.error('Amount must be a number: "{}"'.format(arg))
+        if amount < 1:
+            raise dbg.error('Amount must be positive: "{}"'.format(arg))
+        dbg.print(dump_gctop(G(L(None)), amount))
+
+
 class LJDumpGCobj(dbg.LJBase):
     '''
 lj-gco <GCobj *>
@@ -3242,6 +3405,7 @@ def load(event=None):
         'lj-func':   LJDumpFunc,
         'lj-gc':     LJGC,
         'lj-gco':    LJDumpGCobj,
+        'lj-gctop':  LJGCTop,
         'lj-ir':     LJDumpIR,
         'lj-jslots': LJDumpJSlots,
         'lj-proto':  LJDumpProto,

@@ -92,6 +92,12 @@ def main():
         spec.loader.exec_module(mod)
         run = mod.execute_process
         mod.execute_process = lambda cmd, timeout=timeout: run(cmd, timeout)
+        with open(ext) as fh:
+            if "'lj-gctop'" in fh.read():
+                # Not upstream yet: one more command initialized.
+                gco = r'lj-gco command initialized\n'
+                mod.TestLoad.pattern = mod.TestLoad.pattern.replace(
+                    gco, gco + r'lj-gctop command initialized\n')
         for name, why in tarantool_skips(
                 tarantool_version(tarantool)).items():
             setattr(mod, name, unittest.skip(why)(getattr(mod, name)))
