@@ -644,8 +644,10 @@ CRASH_CMDS = [
     ('fibers', 'info tt-fibers'),
     ('top.bt', 'bt'),
     ('sleeper', tt_fiber('tt-sleeper')),
+    ('sleeper.frame', 'frame'),
     ('sleeper.bt', 'bt'),
     ('waiter', tt_fiber('tt-waiter')),
+    ('waiter.frame', 'frame'),
     ('waiter.bt', 'bt'),
     # The selection survives a flush of the frame cache, and a thread
     # switch and back.
@@ -811,6 +813,15 @@ class CrashChecks(object):
             names = [f for _, _, f in frames]
             for f in (crash[0], 'crash_signal_cb'):
                 self.assertNotIn(f, names, '{} ({})'.format(name, self.MODE))
+
+    def test_selected(self):
+        # tt-fiber selects the newest frame of the fiber, the first one
+        # of its bt, not an inline frame of the running fiber above it.
+        for key in ('sleeper', 'waiter'):
+            out = self.cmd(key + '.frame')
+            self.assertEqual(bt_frames(out)[:1],
+                             bt_frames(self.cmd(key + '.bt'))[:1],
+                             '{} ({}): {}'.format(key, self.MODE, out))
 
     def test_flush(self):
         want = self.cmd('waiter.bt')
