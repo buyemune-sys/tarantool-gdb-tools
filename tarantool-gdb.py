@@ -107,6 +107,20 @@ def offset_ptr(ptr, offset):
 def container_of(ptr, container_type, field):
     return cast_ptr(container_type, ptr, -(container_type[field].bitpos // 8)).dereference()
 
+def struct_to_dict(val, fields):
+    """The fields of a struct value as Python ints (lists for arrays): the
+    printers of decimal, uuid and datetime do Python arithmetic and
+    formatting, which a gdb.Value does not support ('//', '{:x}')."""
+    res = {}
+    for name in fields:
+        v = val[name]
+        if v.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY:
+            low, high = v.type.strip_typedefs().range()
+            res[name] = [int(v[i]) for i in range(low, high + 1)]
+        else:
+            res[name] = int(v)
+    return res
+
 INT32_MAX = 2**31 - 1
 INT32_MIN = -2**31
 INT_MAX = INT32_MAX
@@ -914,9 +928,25 @@ if MP_DECIMAL is not None:
 
             return s
 
+    class DecNumberInMemory(DecNumber):
+        """A decNumber of the inferior.  Its units hold DECDPUN digits as
+        tarantool builds decNumber, 3 (the default of decNumber.h), not
+        the 4 of the numbers from_bcd() makes: it is the count of digits
+        that gives the count of units of decNumber.lsu, else 3."""
+        DECDPUN = 3
+        __type = find_type('decNumber')
+        if __type is not None:
+            __units = __type['lsu'].type.range()[1] + 1
+            for __d in range(1, 10):
+                if (DecNumber.DECIMAL_MAX_DIGITS + __d - 1) // __d == __units:
+                    DECDPUN = __d
+                    break
+        DECPOWERS = [10**i for i in range(0, DECDPUN)]
+
     class DecNumberPrinter:
         def __init__(self, val):
-            self.val = DecNumber(val)
+            self.val = DecNumberInMemory(struct_to_dict(
+                val, ('digits', 'exponent', 'bits', 'lsu')))
 
         def to_string(self):
             return str(self.val)
@@ -965,7 +995,9 @@ if MP_UUID is not None:
 
     class UuidPrinter:
         def __init__(self, val):
-            self.val = Uuid(val)
+            self.val = Uuid(struct_to_dict(val, (
+                'time_low', 'time_mid', 'time_hi_and_version',
+                'clock_seq_hi_and_reserved', 'clock_seq_low', 'node')))
 
         def to_string(self):
             return str(self.val)
@@ -1165,7 +1197,8 @@ if MP_DATETIME is not None:
 
     class DatetimePrinter:
         def __init__(self, val):
-            self.val = Datetime(val)
+            self.val = Datetime(struct_to_dict(
+                val, ('epoch', 'nsec', 'tzoffset', 'tzindex')))
 
         def to_string(self):
             return str(self.val)

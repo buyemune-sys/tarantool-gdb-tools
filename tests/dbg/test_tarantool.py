@@ -700,6 +700,21 @@ class TestLists(DbgCase):
         self.assertEqual(len(entries(out)), n)
 
 
+class TestStructs(DbgCase):
+    '''The printers of decimal_t, struct tt_uuid and struct datetime, on
+    the cdata the Lua side made.'''
+    SCENARIOS = (BOX,)
+
+    def test_decimal(self):
+        self.assertEqual(value(self.out(BOX, 'dec')), BOX.oracle()['dec'])
+
+    def test_uuid(self):
+        self.assertEqual(value(self.out(BOX, 'uuid')), BOX.oracle()['uuid'])
+
+    def test_datetime(self):
+        self.assertEqual(value(self.out(BOX, 'dt')), BOX.oracle()['dt'])
+
+
 class TestMsgPack(DbgCase):
     SCENARIOS = (BOX,)
 
