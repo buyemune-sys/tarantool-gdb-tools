@@ -104,10 +104,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # After the thread stacks: with it a crash in tarantool stops under
+      # inline frames, which the crash tests of tarantool_gdb.py need.
+      - name: Install the debug info of glibc
+        if: ${{ !cancelled() }}
+        run: |
+          sudo apt-get install -y libc6-dbg
+          dpkg-query -W libc6 libc6-dbg
+
       # The cores of these groups are written with gcore-pages: the
-      # thread checks of tarantool hold on every runner.
+      # thread checks of tarantool hold on every runner.  The crash tests
+      # fail, not skip, without inline frames or the kernel's core.
       - name: luajit_gdb.py and tarantool_gdb.py tests with gdb of ${{ matrix.os }}
         if: ${{ !cancelled() }}
+        env:
+          DBG_REQUIRE: inline-top,kernel-core
         run: |
           tests/dbg/run.sh luajit tarantool 2>&1 | tee "$TMPDIR/run-dbg.log"
           exit "${PIPESTATUS[0]}"

@@ -49,12 +49,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install gdb and pytest
+      # libc6-dbg: the debug info of glibc, where a crash stops under
+      # inline frames (see the tarantool_gdb.py tests).
+      - name: Install gdb, pytest and the debug info of glibc
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdb python3-pytest
+          sudo apt-get install -y gdb python3-pytest libc6-dbg
           gdb --version | head -1
           python3 -m pytest --version
+          dpkg-query -W libc6 libc6-dbg
+
+      # The runners pipe cores to a program (apport): a plain file in the
+      # working directory of the process instead, for the kernel's core
+      # of a crash.  The tests raise the soft RLIMIT_CORE to the hard one.
+      - name: Let the kernel write cores to files
+        run: |
+          echo "core_pattern was: $(cat /proc/sys/kernel/core_pattern)"
+          sudo sysctl -w kernel.core_pattern=core.%p
+          echo "RLIMIT_CORE: soft $(ulimit -Sc), hard $(ulimit -Hc)"
 
       - name: Cache the Tarantool build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -95,8 +107,13 @@ jobs:
         shell: bash
 
       # The tarantool_gdb.py steps run whatever the luajit_gdb.py ones did.
+      # This runner has what the crash tests need (inline frames at the
+      # top with libc6-dbg, the kernel's core): they fail, not skip,
+      # without it.
       - name: tarantool_gdb.py tests
         if: ${{ !cancelled() }}
+        env:
+          DBG_REQUIRE: inline-top,kernel-core
         run: tests/dbg/run.sh tarantool 2>&1 | tee "$TMPDIR/run-tarantool.log"; exit "${PIPESTATUS[0]}"
         shell: bash
 
