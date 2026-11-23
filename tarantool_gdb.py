@@ -3527,11 +3527,14 @@ class Fiber(gdb.Command):
 Use this command to select fiber which stack need to be explored.
 FIBER_ID must be currently known, if omitted displays current fiber info.
 
-Please, be aware that the outermost frame (level #0) is filtered out for
-any fiber other than the one that is currently running, so backtrace in
-this case starts with level #1 frame. It's because GDB always starts frame
-sequence with a frame that matches actual value of the stack pointer register,
-but this frame only makes sense for the currently running fiber.
+Please, be aware that the innermost frame (level #0, and the inline frames
+up to the first one that is not, as at a crash in glibc with its debug
+info) is filtered out for any fiber other than the one that is currently
+running, so backtrace in this case starts with level #1 frame, or the one
+after those inline frames; this command selects it. It's because GDB always
+starts frame sequence with a frame that matches actual value of the stack
+pointer register, but this frame only makes sense for the currently running
+fiber.
 
 Please, note that this command does NOT change currently running fiber,
 it just selects stack to explore w/o changing any register/data."""
@@ -3565,7 +3568,7 @@ it just selects stack to explore w/o changing any register/data."""
         if f is None:
             raise gdb.GdbError("Unknown fiber {}.".format(argv[0]))
 
-        fiber_to_unwind, frame_to_select = (None, 0) if f == cord.fiber() else (f, 1)
+        fiber_to_unwind = None if f == cord.fiber() else f
         FiberUnwinder.instance().set_fiber(fiber_to_unwind)
         gdb.write("Switching stack unwinder to fiber {} ({:#x} ({}))\n".format(
             f["fid"],
@@ -3573,6 +3576,22 @@ it just selects stack to explore w/o changing any register/data."""
             f["name"].string(),
         ))
 
+        frame_to_select = 0
+        if fiber_to_unwind is not None:
+            frame_to_select = self.fiber_frame_level()
         gdb.execute("frame {}".format(frame_to_select), False, True)
+
+    @staticmethod
+    def fiber_frame_level():
+        """The level of the newest frame of the selected fiber.  The frames
+        above it are of the running fiber, all with the stack pointer of the
+        thread: the innermost one and the inline frames over it."""
+        frame = gdb.newest_frame()
+        sp = frame.read_register('sp')
+        level = 0
+        while frame is not None and frame.read_register('sp') == sp:
+            frame = frame.older()
+            level += 1
+        return level if frame is not None else 1
 
 Fiber()
