@@ -290,6 +290,17 @@ NOTLS = BOX.variant('box-notls', sources=[H.HIDE_ENUMS] + SOURCES,
                          .format(TLS_BASE)),
                     ])
 
+# Without a value or a type some printers need (a clang build may leave
+# out an enum used only through its constants).
+NODWARF = BOX.variant('box-nodwarf', sources=[H.HIDE_ENUMS] + SOURCES,
+                      gdb_env={'DBG_HIDE_ENUMS': 'zones_unsorted,MP_ERROR_MAX,'
+                               'FIELD_YEAR,JSON_TOKEN_NUM',
+                               'DBG_HIDE_TYPES': 'tuple_flag'}, cmds=[
+                          (k, c) for k, c in BOX_CMDS if k in (
+                              'fibers', 'mp.datetime', 'mp.error',
+                              'mp.interval', 'mp.decimal', 'mp.uuid', 'token',
+                              'tuple', 'alive')])
+
 
 def mp_text(v):
     '''A JSON value of the oracle as tt-mp prints its MsgPack.'''
@@ -765,6 +776,49 @@ class TestLists(DbgCase):
         self.assertTrue(out.startswith(
             'stailq<txn::in_txn_cache> of length {}'.format(n)), out)
         self.assertEqual(len(entries(out)), n)
+
+
+class TestNoDwarf(DbgCase):
+    '''What a printer needs is not in the debug info: that printer is off,
+    the rest of the file works.'''
+    SCENARIOS = (BOX, NODWARF)
+
+    def test_load(self):
+        for mode in NODWARF.modes():
+            res = self.result(NODWARF, mode)
+            self.assertEqual(res['load_err'], [], mode)
+            self.assertEqual(
+                [s for s in res['load'].split('\n')
+                 if s.startswith('tarantool-gdb.py:')],
+                ['tarantool-gdb.py: no value {} in the debug info, the {} '
+                 'printer is off'.format(n, p) for n, p in (
+                     ('zones_unsorted', 'datetime'),
+                     ('MP_ERROR_MAX', 'MsgPack error'),
+                     ('FIELD_YEAR', 'MsgPack interval'),
+                     ('JSON_TOKEN_NUM', 'json_token'))], mode)
+        self.assertNoPyError(NODWARF)
+
+    def test_off(self):
+        # The extensions with no printer print as unknown ones.
+        for name, ext in (('datetime', 4), ('error', 3), ('interval', 6)):
+            self.assertRegex(value(self.out(NODWARF, 'mp.' + name)),
+                             r'^ext:{} of len \d+$'.format(ext))
+        self.assertTrue(value(self.out(NODWARF, 'token')).startswith(
+            '{type = '))
+        # No tuple_flag: the flags in hex only.
+        out = value(self.out(NODWARF, 'tuple'))
+        self.assertRegex(out, r'flags = 0x[0-9a-f]{2}, format_id')
+
+    def test_rest(self):
+        # Another process: the same objects at other addresses.
+        for key in ('mp.decimal', 'mp.uuid'):
+            self.assertEqual(value(self.out(NODWARF, key)),
+                             value(self.out(BOX, key)), key)
+        self.assertEqual(
+            [(f, n) for _, f, n, _ in fiber_rows(self.out(NODWARF, 'fibers'))],
+            [(f, n) for _, f, n, _ in fiber_rows(self.out(BOX, 'fibers'))])
+        self.assertEqual(fids(self.out(NODWARF, 'alive')),
+                         fids(self.out(BOX, 'alive')))
 
 
 class TestStructs(DbgCase):

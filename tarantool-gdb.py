@@ -85,6 +85,22 @@ def find_value(sym):
     except Exception:
         return None
 
+def dwarf_has(what, values=(), types=(), symbols=()):
+    """The debug info has every value (an enum member, a variable), type
+    and symbol a printer needs; if not, say once that the printer is off,
+    instead of failing the whole file (an enum used only through its
+    constants may be left out of the DWARF, tarantool/tarantool#13094)."""
+    for kind, names, found in (('value', values, find_value),
+                               ('type', types, find_type),
+                               ('symbol', symbols, symbol_exists)):
+        for name in names:
+            res = found(name)       # an enum member may be 0: no bool()
+            if res is None or res is False:
+                gdb.write('tarantool-gdb.py: no {} {} in the debug info, '
+                          'the {} printer is off\n'.format(kind, name, what))
+                return False
+    return True
+
 def symbol_exists(name):
     if gdb.lookup_global_symbol(name) is not None:
         return True
@@ -1022,7 +1038,8 @@ if MP_UUID is not None:
 # MsgPack extension: MP_DATETIME
 
 MP_DATETIME = find_value('MP_DATETIME')
-if MP_DATETIME is not None:
+if MP_DATETIME is not None and \
+        dwarf_has('datetime', values=('zones_unsorted',)):
     class MsgPackExtPrinterDatetime(MsgPackPrinter.ExtPrinter):
         def decode(self): # datetime_unpack
             epoch = self.decode_num(MsgPack.NUM_INT, 8, False)
@@ -1223,7 +1240,8 @@ if MP_DATETIME is not None:
 # MsgPack extension: MP_ERROR
 
 MP_ERROR = find_value('MP_ERROR')
-if MP_ERROR is not None:
+if MP_ERROR is not None and dwarf_has('MsgPack error', values=(
+        'MP_ERROR_MAX', 'mp_error_field_to_json_key', 'MP_ERROR_STACK')):
     class MsgPackExtPrinterError(MsgPackPrinter.ExtPrinter):
         MP_ERROR_MAX = int(gdb.parse_and_eval('MP_ERROR_MAX'))
         mp_error_field_to_json_key = gdb.parse_and_eval('mp_error_field_to_json_key')
@@ -1266,7 +1284,9 @@ if MP_ERROR is not None:
 # MsgPack extension: MP_COMPRESSION
 
 MP_COMPRESSION = find_value('MP_COMPRESSION')
-if MP_COMPRESSION is not None:
+if MP_COMPRESSION is not None and dwarf_has('MsgPack compression', values=(
+        'COMPRESSION_TYPE_NONE', 'compression_type_MAX',
+        'compression_type_strs')):
     class MsgPackExtPrinterCompression(MsgPackPrinter.ExtPrinter):
         def decode(self):
             cmpr_type = self.decode_mp(MsgPack.TYPE_UINT)
@@ -1304,7 +1324,10 @@ if MP_COMPRESSION is not None:
 # MsgPack extension: MP_INTERVAL
 
 MP_INTERVAL = find_value('MP_INTERVAL')
-if MP_INTERVAL is not None:
+if MP_INTERVAL is not None and dwarf_has('MsgPack interval', values=(
+        'FIELD_YEAR', 'FIELD_MONTH', 'FIELD_WEEK', 'FIELD_DAY', 'FIELD_HOUR',
+        'FIELD_MINUTE', 'FIELD_SECOND', 'FIELD_NANOSECOND', 'FIELD_ADJUST',
+        'DT_EXCESS', 'DT_LIMIT', 'DT_SNAP')):
     class MsgPackExtPrinterInterval(MsgPackPrinter.ExtPrinter):
         FIELD_YEAR = int(gdb.parse_and_eval('FIELD_YEAR'))
         FIELD_MONTH = int(gdb.parse_and_eval('FIELD_MONTH'))
@@ -1399,12 +1422,13 @@ if MP_TUPLE is not None:
 class JsonTokenPrinter:
     """Print a json_token object."""
 
-    JSON_TOKEN_NUM = gdb.parse_and_eval('JSON_TOKEN_NUM')
-    JSON_TOKEN_STR = gdb.parse_and_eval('JSON_TOKEN_STR')
-    JSON_TOKEN_ANY = gdb.parse_and_eval('JSON_TOKEN_ANY')
-    JSON_TOKEN_END = gdb.parse_and_eval('JSON_TOKEN_END')
+    # Registered below only if the debug info has them all.
+    JSON_TOKEN_NUM = find_value('JSON_TOKEN_NUM')
+    JSON_TOKEN_STR = find_value('JSON_TOKEN_STR')
+    JSON_TOKEN_ANY = find_value('JSON_TOKEN_ANY')
+    JSON_TOKEN_END = find_value('JSON_TOKEN_END')
 
-    tuple_field_type = gdb.lookup_type('tuple_field')
+    tuple_field_type = find_type('tuple_field')
 
     def __init__(self, val):
         self.val = val
@@ -1446,18 +1470,22 @@ class JsonTokenPrinter:
     def display_hint(self):
         return 'array'
 
-pp.add_printer('JsonToken', '^json_token$', JsonTokenPrinter)
+if dwarf_has('json_token', values=(
+        'JSON_TOKEN_NUM', 'JSON_TOKEN_STR', 'JSON_TOKEN_ANY', 'JSON_TOKEN_END'),
+        types=('tuple_field',)):
+    pp.add_printer('JsonToken', '^json_token$', JsonTokenPrinter)
 
 
 class TuplePrinter(object):
     """Print a tuple object."""
 
-    tuple_type = gdb.lookup_type('struct tuple')
-    support_compact = gdb.types.has_field(tuple_type, 'data_offset_bsize_raw')
-
-    tuple_formats_sym = gdb.lookup_global_symbol('tuple_formats')
-    if not tuple_formats_sym:
-        raise NameError('tuple_formats is missing')
+    # Registered below only if the debug info has struct tuple and
+    # tuple_formats.
+    tuple_type = find_type('struct tuple')
+    support_compact = tuple_type is not None and \
+        gdb.types.has_field(tuple_type, 'data_offset_bsize_raw')
+    # tuple_flag (TUPLE_IS_DIRTY...): the flags are shown in hex if not.
+    tuple_flag_type = find_type('tuple_flag')
 
     @staticmethod
     def tuple_formats():
@@ -1543,9 +1571,9 @@ class TuplePrinter(object):
                 child_val = '0x{:02x}'.format(int(flags_val))
                 bits_set = []
                 for bit in range(flags_val.type.sizeof * 8):
-                    if int(flags_val) & (1 << bit) != 0:
-                        tuple_flag_type = gdb.lookup_type('tuple_flag')
-                        bits_set.append(enumval_name(tuple_flag_type,
+                    if int(flags_val) & (1 << bit) != 0 and \
+                            self.tuple_flag_type is not None:
+                        bits_set.append(enumval_name(self.tuple_flag_type,
                                                      bit, '*unknown*'))
                 if len(bits_set) != 0:
                     child_val += ' ({})'.format(', '.join(bits_set))
@@ -1561,7 +1589,8 @@ class TuplePrinter(object):
         yield 'data', self.data()
         pp_msgpack.activated = False
 
-pp.add_printer('Tuple', '^tuple$', TuplePrinter)
+if dwarf_has('tuple', types=('struct tuple',), symbols=('tuple_formats',)):
+    pp.add_printer('Tuple', '^tuple$', TuplePrinter)
 
 
 class ContainerFieldInfo(object):
