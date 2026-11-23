@@ -14,6 +14,7 @@ from collections import namedtuple
 
 import gdb
 import gdb.printing
+import gdb.types
 
 if sys.version_info[0] == 2:
     map = itertools.imap
