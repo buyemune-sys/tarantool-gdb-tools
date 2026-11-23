@@ -73,6 +73,24 @@ def tarantool_skips(version, arch):
     return skips
 
 
+def red_zone_any_value(mod):
+    '''The lj-stack tests want every red zone slot nil.  LuaJIT does not
+    keep it so: the red zone (LJ_STACK_EXTRA, lj_state.h: "Extra stack
+    space (metamethods)") takes the frames and arguments of metamethod
+    calls above the top, and only the atomic GC phase (lj_gc.c,
+    gc_traverse_thread) and a stack growth (lj_state.c, resizestack)
+    reset slots to nil.  CI run 45128549373, 3.2.4 arm64: "fast function
+    pairs", true and "enterprise_edition" there.  Any value is let pass;
+    test_luajit.py checks every slot against the memory.'''
+    nil = r' VALUE: nil\n?)*'
+    for name in ('TestLJStackBase', 'TestLJStackFunc'):
+        cls = getattr(mod, name)
+        if nil not in cls.pattern:
+            raise RuntimeError('{}: the red zone pattern changed, review '
+                               'red_zone_any_value()'.format(name))
+        cls.pattern = cls.pattern.replace(nil, r' VALUE: .+\n?)*', 1)
+
+
 def tarantool_info(tarantool):
     '''((major, minor, patch), jit.arch) of the binary.'''
     out = subprocess.run([tarantool, '-e',
@@ -110,6 +128,7 @@ def main():
                 gco = r'lj-gco command initialized\n'
                 mod.TestLoad.pattern = mod.TestLoad.pattern.replace(
                     gco, gco + r'lj-gctop command initialized\n')
+        red_zone_any_value(mod)
         for name, why in tarantool_skips(*tarantool_info(tarantool)).items():
             setattr(mod, name, unittest.skip(why)(getattr(mod, name)))
         prog = unittest.main(module=mod, argv=[sys.argv[0]] + sys.argv[1:],

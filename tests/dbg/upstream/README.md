@@ -31,11 +31,15 @@ Tests that cannot pass against tarantool whatever the extension does
 are skipped with the reason (`tarantool_skips()` in `run_luajit.py`):
 tarantool's `print` is a Lua wrapper, its startup Lua reaches the
 breakpoints first, it declares `getpid()`, every trace starts with its
-own hook check, and before 3.7 the first GC cycle runs before
-`tarantool_L` is set. `tests/dbg/test_luajit.py` checks the same
-commands in the form tarantool allows, live and on cores. The runner
-gives a gdb run 60 s (`DBG_UPSTREAM_TIMEOUT`) instead of the upstream
-10, and tells `TestLoad` about `lj-gctop`, not upstream yet.
+own hook check, before 3.7 the first GC cycle runs before
+`tarantool_L` is set, and the arm64 builds of 3.2, 3.3, 3.5 and 3.6
+have `fname` of `lj_cf_dofile` optimized out (`TestLJStr`).
+`tests/dbg/test_luajit.py` checks the same commands in the form
+tarantool allows, live and on cores. The runner gives a gdb run 60 s
+(`DBG_UPSTREAM_TIMEOUT`) instead of the upstream 10, tells `TestLoad`
+about `lj-gctop`, not upstream yet, and lets the lj-stack tests see any
+value in the red zone: LuaJIT puts metamethod frames there and clears
+it only in the atomic GC phase.
 
 ## Tarantool
 
