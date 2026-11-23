@@ -15,7 +15,8 @@
 #   DEBUGGER_EXTENSION_PATH  a directory with luajit_dbg.py, a link to
 #                            the extension under test
 #   DEBUGGER_COMMAND         gdb-tarantool, gdb with tarantool.gdb, or
-#                            lldb-tarantool
+#                            lldb-tarantool (by name, this directory
+#                            put in PATH)
 #
 # Tests that cannot pass against a tarantool binary whatever the
 # extension does are skipped with the reason (tarantool_skips()); the
@@ -161,7 +162,11 @@ def main():
     os.environ.update({
         'LUAJIT_TEST_BINARY': tarantool,
         'DEBUGGER_EXTENSION_PATH': extdir,
-        'DEBUGGER_COMMAND': os.path.join(HERE, debugger + '-tarantool'),
+        # By name, found in PATH: the upstream file takes the debugger
+        # for lldb if "lldb" is anywhere in DEBUGGER_COMMAND, and the
+        # path of a checkout may have it.
+        'DEBUGGER_COMMAND': debugger + '-tarantool',
+        'PATH': HERE + os.pathsep + os.environ.get('PATH', ''),
         'PYTHONDONTWRITEBYTECODE': '1',
     })
     try:

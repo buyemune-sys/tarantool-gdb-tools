@@ -2,6 +2,6 @@
 # The debugger command of the upstream tests run against tarantool:
 # gdb (or $DBG_GDB) with tarantool.gdb loaded first.  The upstream tests
 # take it as DEBUGGER_COMMAND; the name must not contain "lldb", they
-# tell the debugger by it.
+# tell the debugger by it (run_luajit.py gives the name, not the path).
 here=$(cd "$(dirname "$0")" && pwd)
 exec "${DBG_GDB:-gdb}" -ix "$here/tarantool.gdb" "$@"
