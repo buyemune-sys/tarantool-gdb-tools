@@ -2898,6 +2898,11 @@ def cord():
     return find_value("cord_ptr") or gdb.parse_and_eval("$tl_var_like(&main_cord)")
 
 
+def fiber():
+    """The fiber running in the selected thread."""
+    return cord()['fiber']
+
+
 class Cord(object):
     def __init__(self):
         self.__cord_ptr = cord()
@@ -2966,17 +2971,38 @@ if support_unwinders:
             self.__set_fiber_internal(None)
 
         def fiber(self):
-            return self.__fiber
+            """The fiber whose stack is explored: the one picked with
+            set_fiber() in the selected thread, else the running one."""
+            if self.__fiber is not None and self.__in_fiber_thread():
+                return self.__fiber
+            return fiber()
 
         def set_fiber(self, f):
+            """Explore the stack of fiber f of the selected thread (None or
+            the running fiber: the stack as it is)."""
+            if f is not None and int(f) == int(fiber()):
+                f = None
             self.__set_fiber_internal(f)
             self.__arch = self.get_arch()
             gdb.invalidate_cached_frames()
 
+        def reset_fiber(self):
+            """Back to the running fiber."""
+            self.set_fiber(None)
+
         def __set_fiber_internal(self, f):
             self.__fiber = f
             self.__is_running_fiber_frame_unwound = False
-            self.__cord = cord()
+            # The selection belongs to this thread.  The unwinder tells a
+            # thread by its ptid: reading cord_ptr there may need a thread
+            # switch (a core with no libthread_db), which gdb does not
+            # survive in an unwinder.
+            thread = gdb.selected_thread()
+            self.__ptid = thread.ptid if thread is not None else None
+
+        def __in_fiber_thread(self):
+            thread = gdb.selected_thread()
+            return thread is not None and thread.ptid == self.__ptid
 
         def get_arch(self):
             if hasattr(gdb.selected_inferior(), "architecture"):
@@ -2990,17 +3016,22 @@ if support_unwinders:
             if not self.__unwind_mode:
                 return None
 
-            # Reset fiber if the unwinder is called due to thread (and hence cord) switching
-            if self.__cord != cord():
-                self.__set_fiber_internal(None)
-
-            # For the currently running fiber use the default unwinder and don't filter frames
-            if self.__fiber is None:
+            # For the currently running fiber, or in another thread than the
+            # one of the selected fiber, use the default unwinder and don't
+            # filter frames
+            if self.__fiber is None or not self.__in_fiber_thread():
                 self.__frame_filter.skip_frame_sp = None
                 return None
 
-            # Once running fiber frame is unwinded proceed with the default unwinder.
-            if self.__is_running_fiber_frame_unwound:
+            # Only the innermost frame (of the running fiber) gets the saved
+            # context of the selected fiber as its caller; then proceed with
+            # the default unwinder.  gdb 12+ tells the level of the frame:
+            # the frames can be unwound again after the cache is flushed (a
+            # thread switch and back, flushregs, another extension).
+            if hasattr(pending_frame, 'level'):
+                if pending_frame.level() != 0:
+                    return None
+            elif self.__is_running_fiber_frame_unwound:
                 return None
 
             # Architecture specific parameters of coro context

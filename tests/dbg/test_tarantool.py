@@ -188,6 +188,32 @@ BOX_CMDS = [
     ('back', 'eval "tt-fiber %d", main_cord.fiber->fid'),
     ('back.fibers', 'info tt-fibers'),
     ('back.bt', 'bt'),
+    # The selection survives a flush of gdb's frame cache.
+    ('flush', 'eval "tt-fiber %d", $dbg_fiber_id("tt-sleeper")'),
+    ('flush.bt', 'bt'),
+    ('flush.cmd', 'maint flush register-cache'),
+    ('flush.bt2', 'bt'),
+    # Another thread while a fiber is selected, and back.
+    ('thread.2', 'thread 2'),
+    ('thread.2.bt', 'bt 1'),
+    ('thread.1', 'thread 1'),
+    ('thread.1.bt', 'bt'),
+    ('flush.back', 'eval "tt-fiber %d", main_cord.fiber->fid'),
+] + [
+    # What lj_bt.py uses: fiber(), Cord().fibers(), FiberUnwinder's
+    # instance(), fiber(), set_fiber(), reset_fiber().
+    ('ljbt.running', "python gdb.write('%d\\n' % int(fiber()['fid']))"),
+    ('ljbt.set', "python u = FiberUnwinder.instance(); "
+     "u.set_fiber([f for f in Cord().fibers() "
+     "if f['name'].string() == 'tt-sleeper'][0]); "
+     "gdb.write('%d %d\\n' % (int(u.fiber()['fid']), int(fiber()['fid'])))"),
+    ('ljbt.set.bt', 'bt'),
+    ('ljbt.reset', "python u = FiberUnwinder.instance(); u.reset_fiber(); "
+     "gdb.write('%d\\n' % int(u.fiber()['fid']))"),
+    ('ljbt.reset.bt', 'bt'),
+    ('ljbt.setrun', "python u = FiberUnwinder.instance(); "
+     "u.set_fiber(fiber()); gdb.write('%d\\n' % int(u.fiber()['fid']))"),
+    ('ljbt.setrun.bt', 'bt'),
 ]
 
 BOX = Scenario('box', BOX_LUA, ['break lj_cf_print'], BOX_CMDS,
@@ -340,6 +366,32 @@ class TestFibers(DbgCase):
         fr = self.frames('back.bt')
         self.assertEqual(fr[0], (0, 'lj_cf_print'))
         self.assertIn('run_script_f', [f for _, f in fr])
+
+    def test_flush(self):
+        # The frames are unwound again after a flush of the frame cache,
+        # or a thread switch and back: the selected fiber is still the
+        # one shown.  In the other thread its own stack.
+        for key in ('flush.bt', 'flush.bt2', 'thread.1.bt'):
+            names = [f for _, f in self.frames(key)]
+            self.assertIn('lbox_fiber_sleep', names, key)
+            self.assertNotIn('lj_cf_print', names, key)
+        self.assertEqual(self.frames('thread.2.bt')[0][0], 0)
+
+    def test_ljbt_interface(self):
+        o = BOX.oracle()
+        self.assertEqual(self.out(BOX, 'ljbt.running').strip(),
+                         str(o['running']))
+        self.assertEqual(self.out(BOX, 'ljbt.set').strip(),
+                         '{} {}'.format(o['sleeper'], o['running']))
+        names = [f for _, f in self.frames('ljbt.set.bt')]
+        self.assertIn('lbox_fiber_sleep', names)
+        self.assertNotIn('lj_cf_print', names)
+        # Back to the running fiber: reset_fiber(), or set_fiber() of it.
+        for key in ('ljbt.reset', 'ljbt.setrun'):
+            self.assertEqual(self.out(BOX, key).strip(), str(o['running']))
+            fr = self.frames(key + '.bt')
+            self.assertEqual(fr[0], (0, 'lj_cf_print'), key)
+            self.assertIn('run_script_f', [f for _, f in fr], key)
 
 class TestTuple(DbgCase):
     SCENARIOS = (BOX,)
