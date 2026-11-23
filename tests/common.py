@@ -2,8 +2,10 @@
 #
 # Environment:
 #   LJBT_TARANTOOL   tarantool binary with DWARF (required)
-#   LJBT_LUAJIT_DBG  luajit_dbg.py of the same build (required)
-#   LJBT_TT_GDB      tools/tarantool-gdb.py (optional: fiber tests)
+#   LJBT_LUAJIT_DBG  the LuaJIT extension: luajit_dbg.py of the same build
+#                    (required)
+#   LJBT_TT_GDB      the Tarantool extension: tools/tarantool-gdb.py
+#                    (optional: fiber tests)
 #   LJBT_SEEDS       layer 2: number of random chains (default 200)
 #   LJBT_SEED0       layer 2: first seed (default 1)
 #   LJBT_STOPS       layer 3: number of random stops (default 500)
@@ -24,9 +26,10 @@ import tempfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 LUA = os.path.join(TESTS, 'lua')
-# LJBT_LJ_BT runs the tests against another lj_bt.py, e.g. an older one,
-# to see a new test fail before its fix.
-LJ_BT = os.environ.get('LJBT_LJ_BT') or os.path.join(ROOT, 'lj_bt.py')
+# LJBT_LJ_BT runs the tests against another luajit_backtrace_gdb.py, e.g.
+# an older one, to see a new test fail before its fix.
+LJ_BT = os.environ.get('LJBT_LJ_BT') or \
+    os.path.join(ROOT, 'luajit_backtrace_gdb.py')
 PROBE = os.path.join(TESTS, 'probe.py')
 CLI_GDB = os.path.join(TESTS, 'cli_gdb.py')
 
@@ -90,8 +93,9 @@ class WorkDir(object):
 
 
 def gdb_prelude(tt_gdb_after_start=False):
-    '''Common gdb settings and the extensions.  tarantool-gdb.py reads
-    TLS on load, so it is sourced only after the process has started.'''
+    '''Common gdb settings and the extensions.  tools/tarantool-gdb.py of
+    the releases reads TLS on load, so the Tarantool extension is sourced
+    only after the process has started.'''
     lines = [
         'set pagination off',
         'set confirm off',
@@ -106,7 +110,7 @@ def gdb_prelude(tt_gdb_after_start=False):
         'source ' + LJ_BT,
         'source ' + PROBE,
     ]
-    # Debugging aid / mutation testing: one more file after lj_bt.py.
+    # Debugging aid / mutation testing: one more file after lj-bt's.
     if os.environ.get('LJBT_EXTRA_SOURCE'):
         lines.append('source ' + os.environ['LJBT_EXTRA_SOURCE'])
     return '\n'.join(lines) + '\n'

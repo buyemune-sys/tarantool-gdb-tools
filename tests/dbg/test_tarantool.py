@@ -1,4 +1,4 @@
-# Tests of tarantool-gdb.py against tarantool: every command and
+# Tests of tarantool_gdb.py against tarantool: every command and
 # pretty-printer, live and on a core, the output compared with what the
 # Lua side or gdb itself says.
 #
@@ -257,7 +257,7 @@ BOX_CMDS = [
     ('thread.1.bt', 'bt'),
     ('flush.back', 'eval "tt-fiber %d", main_cord.fiber->fid'),
 ] + [
-    # What lj_bt.py uses: fiber(), Cord().fibers(), FiberUnwinder's
+    # What lj-bt uses: fiber(), Cord().fibers(), FiberUnwinder's
     # instance(), fiber(), set_fiber(), reset_fiber().
     ('ljbt.running', "python gdb.write('%d\\n' % int(fiber()['fid']))"),
     ('ljbt.set', "python u = FiberUnwinder.instance(); "
@@ -788,8 +788,8 @@ class TestNoDwarf(DbgCase):
             self.assertEqual(res['load_err'], [], mode)
             self.assertEqual(
                 [s for s in res['load'].split('\n')
-                 if s.startswith('tarantool-gdb.py:')],
-                ['tarantool-gdb.py: no value {} in the debug info, the {} '
+                 if s.startswith('tarantool_gdb.py:')],
+                ['tarantool_gdb.py: no value {} in the debug info, the {} '
                  'printer is off'.format(n, p) for n, p in (
                      ('zones_unsorted', 'datetime'),
                      ('MP_ERROR_MAX', 'MsgPack error'),

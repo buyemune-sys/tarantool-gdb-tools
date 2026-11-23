@@ -1,6 +1,6 @@
-# gdb functions and commands the tests of tarantool-gdb.py compare it
+# gdb functions and commands the tests of tarantool_gdb.py compare it
 # with.  They read the tarantool structures on their own, with nothing
-# of tarantool-gdb.py, so that a test does not check the extension
+# of tarantool_gdb.py, so that a test does not check the extension
 # against itself.
 import gdb
 

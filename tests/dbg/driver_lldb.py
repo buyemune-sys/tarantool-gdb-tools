@@ -13,7 +13,7 @@
 #   commands.  A breakpoint condition is evaluated here, not by lldb.
 #   Anything else goes to lldb as is.
 #
-# An error of a command is its message as luajit_dbg.py gives it, with
+# An error of a command is its message as luajit_gdb.py gives it, with
 # lldb's "error: Failed to execute command `X`: " taken off; a Python
 # exception the extension let out is "Error occurred in Python: ..." as
 # in gdb.
@@ -69,7 +69,7 @@ class Driver(object):
 
     def handle(self, cmd):
         '''Run an lldb command: (out, err).  Python output and tracebacks
-        of the command (luajit_dbg.py writes to sys.stdout) are taken.'''
+        of the command (luajit_gdb.py writes to sys.stdout) are taken.'''
         res = lldb.SBCommandReturnObject()
         out, err = io.StringIO(), io.StringIO()
         saved = sys.stdout, sys.stderr
@@ -456,7 +456,7 @@ class Driver(object):
 
     def hide_enums(self):
         '''Make the members of $DBG_HIDE_ENUMS unknown to lldb as
-        luajit_dbg.py asks for them (an expression, the enum members of a
+        luajit_gdb.py asks for them (an expression, the enum members of a
         type, the enum types of a module), as if the debug info had not
         their enums (tarantool/tarantool#13094).'''
         hidden = set(os.environ.get('DBG_HIDE_ENUMS', '').split(',')) - {''}
@@ -510,7 +510,7 @@ class Driver(object):
                 if getattr(m, 'ENUM_FALLBACK', None) is not None and
                 getattr(m, 'EnumBasedList', None) is not None]
         if not mods:
-            raise Error('luajit_dbg.py is not loaded')
+            raise Error('luajit_gdb.py is not loaded')
         m = mods[-1]
         out = {}
         for v in vars(m).values():

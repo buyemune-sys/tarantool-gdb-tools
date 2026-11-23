@@ -4,9 +4,9 @@
 # license (Copyright (C) 2005-2017 Mike Pall, COPYRIGHT of LuaJIT); see
 # NOTICE of that repository.
 # To use in GDB:
-# `source <path-to-repo>/src/luajit_dbg.py'
-# To use in LLDB:
-# `command script import <path-to-repo>/src/luajit_dbg.py'
+# `source <path-to-repo>/luajit_gdb.py'
+# To use in LLDB (the file name is the module name: no dots or dashes):
+# `command script import <path-to-repo>/luajit_gdb.py'
 
 import abc
 import heapq
@@ -97,7 +97,7 @@ class Debugger(object):
             PADDING = ' ' * len(':' + hex((1 << (47 if LJ_GC64 else 32)) - 1))
             LJ_TISNUM = 0xfffeffff if LJ_64 and not LJ_GC64 else LJ_T['NUMX']
         except Exception:
-            self.write('luajit_dbg.py failed to load: '
+            self.write('luajit_gdb.py failed to load: '
                        'no debugging symbols found for libluajit\n')
             return False
 
@@ -353,7 +353,7 @@ class _GDBDebugger(Debugger):
             # Detect whether libluajit objfile is loaded.
             gdb.parse_and_eval('luaJIT_setmode')
         except Exception:
-            gdb.write('luajit_dbg.py initialization is postponed '
+            gdb.write('luajit_gdb.py initialization is postponed '
                       'until libluajit objfile is loaded\n')
             # Add a callback to be executed when the next objfile
             # is loaded.
@@ -1213,7 +1213,7 @@ class EnumBasedList(object):
                     raise dbg.error('{}: {}'.format(msg, e))
                 # The debug info may leave out an enum used only through
                 # its constants: take the built-in members.
-                dbg.write('luajit_dbg.py: {}, taking the built-in '
+                dbg.write('luajit_gdb.py: {}, taking the built-in '
                           'list\n'.format(msg))
                 names = ENUM_FALLBACK[self.__max_enum_member].split()
             else:
@@ -1603,7 +1603,7 @@ def strdata(obj):
     try:
         return dbg.cstr(dbg.cast('char *', dbg.cast('GCstr *', obj) + 1))
     except UnicodeEncodeError:
-        return "<luajit_dbg: error occurred while rendering non-ascii slot>"
+        return "<luajit_gdb: error occurred while rendering non-ascii slot>"
 
 
 def funcproto(func):

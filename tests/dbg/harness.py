@@ -1,16 +1,17 @@
-# Shared helpers of the tests of luajit_dbg.py and tarantool-gdb.py.
+# Shared helpers of the tests of luajit_gdb.py and tarantool_gdb.py.
 #
 # Environment:
 #   LJBT_TARANTOOL   tarantool binary with DWARF (required; the name is
 #                    the one tests/fetch.sh prints)
-#   DBG_LUAJIT_DBG   the luajit_dbg.py under test (default: the one of
-#                    this repo; point it at an upstream copy to see a
-#                    test of a fix fail before the fix)
-#   DBG_TT_GDB       the tarantool-gdb.py under test (default: this repo)
-#   DBG_GCORE_PAGES  the gcore_pages.py whose gcore-pages writes the
-#                    cores (default: this repo); "plain": gdb's gcore,
-#                    which before gdb 18.1 loses the thread stacks of
-#                    glibc 2.42+ (see gcore_pages.py)
+#   DBG_LUAJIT_DBG   the LuaJIT extension under test (default:
+#                    luajit_gdb.py of this repo; point it at an upstream
+#                    copy to see a test of a fix fail before the fix)
+#   DBG_TT_GDB       the Tarantool extension under test (default:
+#                    tarantool_gdb.py of this repo)
+#   DBG_GCORE_PAGES  the file whose gcore-pages writes the cores
+#                    (default: gcore_pages_gdb.py of this repo); "plain":
+#                    gdb's gcore, which before gdb 18.1 loses the thread
+#                    stacks of glibc 2.42+ (see gcore_pages_gdb.py)
 #   DBG_KEEP         keep the work directories (plans, results, gdb logs);
 #                    DBG_KEEP=cores keeps the core files (~40 MB each) too
 #   DBG_VERBOSE      print plans and results
@@ -43,11 +44,11 @@ LUA = os.path.join(HERE, 'lua')
 
 TARANTOOL = os.environ.get('LJBT_TARANTOOL')
 LUAJIT_DBG = os.environ.get('DBG_LUAJIT_DBG') or \
-    os.path.join(ROOT, 'luajit_dbg.py')
+    os.path.join(ROOT, 'luajit_gdb.py')
 TT_GDB = os.environ.get('DBG_TT_GDB') or \
-    os.path.join(ROOT, 'tarantool-gdb.py')
+    os.path.join(ROOT, 'tarantool_gdb.py')
 GCORE_PAGES = os.environ.get('DBG_GCORE_PAGES') or \
-    os.path.join(ROOT, 'gcore_pages.py')
+    os.path.join(ROOT, 'gcore_pages_gdb.py')
 KEEP = os.environ.get('DBG_KEEP', '')
 VERBOSE = bool(os.environ.get('DBG_VERBOSE'))
 GDB = os.environ.get('DBG_GDB', 'gdb')

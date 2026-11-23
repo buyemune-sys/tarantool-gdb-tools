@@ -1,5 +1,5 @@
-# Sourced into gdb after luajit_dbg.py: `dbg-enum-check` prints, as
-# JSON, the members of every enum of luajit_dbg.py's EnumBasedList as
+# Sourced into gdb after luajit_gdb.py: `dbg-enum-check` prints, as
+# JSON, the members of every enum of luajit_gdb.py's EnumBasedList as
 # the debug info has them and as its built-in ENUM_FALLBACK has them.
 import json
 

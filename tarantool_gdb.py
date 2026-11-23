@@ -101,7 +101,7 @@ def dwarf_has(what, values=(), types=(), symbols=()):
         for name in names:
             res = found(name)       # an enum member may be 0: no bool()
             if res is None or res is False:
-                gdb.write('tarantool-gdb.py: no {} {} in the debug info, '
+                gdb.write('tarantool_gdb.py: no {} {} in the debug info, '
                           'the {} printer is off\n'.format(kind, name, what))
                 return False
     return True

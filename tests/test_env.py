@@ -152,7 +152,8 @@ print('BOTTOMS ' + json.dumps(res))
                          ['fiber_yield', 'coro_transfer', None])
 
     def test_not_initialized(self):
-        # No binary: luajit_dbg.py postpones its setup, LJ_GC64 is None.
+        # No binary: the LuaJIT extension postpones its setup, LJ_GC64 is
+        # None.
         out = self.gdb('source {}\nsource {}\nlj-bt\n'.format(
             C.LUAJIT_DBG, C.LJ_BT))
         self.assertIn('lj-bt: the LuaJIT extension is not initialized', out)

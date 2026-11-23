@@ -19,8 +19,8 @@
 #   all      everything; default: oracle core random stops tail cli env
 #            window rust
 #
-# LJBT_LJ_BT runs the tests against another lj_bt.py (an older one, to see
-# a new test fail before its fix).
+# LJBT_LJ_BT runs the tests against another luajit_backtrace_gdb.py (an
+# older one, to see a new test fail before its fix).
 #
 # Environment (see tests/common.py): LJBT_TARANTOOL and LJBT_LUAJIT_DBG are
 # required; LJBT_TT_GDB, LJBT_SEEDS, LJBT_SEED0, LJBT_STOPS, LJBT_JIT,

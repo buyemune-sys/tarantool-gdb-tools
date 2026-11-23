@@ -16,7 +16,8 @@ The upstream file runs gdb (or lldb) against the luajit binary.
 `run_luajit.py` runs it unchanged against tarantool: it sets
 `LUAJIT_TEST_BINARY` to `$LJBT_TARANTOOL`, `DEBUGGER_EXTENSION_PATH` to a
 directory with the extension under test (`$DBG_LUAJIT_DBG`, default the
-`luajit_dbg.py` of this repo) and `DEBUGGER_COMMAND` to `gdb-tarantool`:
+`luajit_gdb.py` of this repo), linked as `luajit_dbg.py`, the name the
+upstream file loads, and `DEBUGGER_COMMAND` to `gdb-tarantool`:
 gdb with `tarantool.gdb`, whose `hook-run` puts
 `-e "jit.opt.start('hotloop=56') jit.flush()"` in front of the inferior
 arguments: the first trace of a test script is trace 1 as in plain
@@ -73,7 +74,7 @@ live (a literal needs a process to live in).
 `DBG_PYTHON=<python3 with pytest>`). It does not load
 `tarantool/conftest.py` (`--noconftest`): the plugin `tt_fixtures.py`
 gives the same fixtures, with `tarantool_bin` from `$LJBT_TARANTOOL`,
-`tarantool_gdb_ext` from `$DBG_TT_GDB` (default the `tarantool-gdb.py`
+`tarantool_gdb_ext` from `$DBG_TT_GDB` (default the `tarantool_gdb.py`
 of this repo) and `tarantool_coredump` written by gdb's `gcore` at the
 SIGSEGV of the same crash, so the core tests need neither a
 `core_pattern` nor `ENABLE_COREDUMP_TESTS`.

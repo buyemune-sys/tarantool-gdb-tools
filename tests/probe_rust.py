@@ -11,7 +11,7 @@
 #            with " (" in it stays whole (generics: `wrapper<F, (i64), i64>`
 #            would be cut there by probe.py); with --fiber, without the
 #            frame #0 of the running fiber, which lj-bt and the frame
-#            filter of tarantool-gdb.py leave out
+#            filter of tarantool_gdb.py leave out
 #   bt_probe the frames as probe.py parsed them
 #   solibs   {pc: shared library or null} of the lj-bt frames
 #   core     with --gcore, the core file `gcore` wrote into DIR

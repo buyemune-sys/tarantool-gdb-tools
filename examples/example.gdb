@@ -14,7 +14,7 @@ python
 import os
 gdb.execute('source ' + os.environ['LJBT_LUAJIT_DBG'])
 end
-source lj_bt.py
+source luajit_backtrace_gdb.py
 break lbox_session_id
 run
 delete

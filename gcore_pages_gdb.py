@@ -1,7 +1,7 @@
-# gcore_pages.py: gcore that keeps the thread stacks of glibc 2.42+ with
-# gdb before 18.1.
+# gcore_pages_gdb.py: gcore that keeps the thread stacks of glibc 2.42+
+# with gdb before 18.1.
 #
-#   (gdb) source gcore_pages.py
+#   (gdb) source gcore_pages_gdb.py
 #   (gdb) gcore-pages [FILE]
 #
 # gcore of gdb before 18.1 (gcore_copy_callback() in gdb/gcore.c) copies
@@ -115,7 +115,7 @@ class GcorePages(gdb.Command):
     pages that gcore of gdb before 18.1 leaves out: every mapping is read
     again from its first 1 MiB that cannot be read whole, page by page
     there, as gdb 18.1 does (a thread stack of glibc 2.42+ starts with
-    its guard page).  See gcore_pages.py.'''
+    its guard page).  See gcore_pages_gdb.py.'''
 
     def __init__(self):
         super(GcorePages, self).__init__('gcore-pages', gdb.COMMAND_FILES,

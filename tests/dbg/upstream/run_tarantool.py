@@ -1,5 +1,5 @@
 # Run the vendored tests of tools/tarantool-gdb.py (tarantool/,
-# unchanged) against the tarantool-gdb.py under test:
+# unchanged) against the Tarantool extension under test:
 #
 #   python3 tests/dbg/upstream/run_tarantool.py [pytest arguments]
 #
@@ -14,8 +14,9 @@
 # instead of one found through core_pattern.
 #
 # Environment: LJBT_TARANTOOL (required), DBG_TT_GDB (the extension
-# under test, default: tarantool-gdb.py of this repo; the one of a
-# release works too), DBG_GDB, DBG_PYTHON (a python3 with pytest,
+# under test, default: tarantool_gdb.py of this repo; the
+# tools/tarantool-gdb.py of a release works too), DBG_GDB, DBG_PYTHON (a
+# python3 with pytest,
 # default: this one), TMPDIR.
 
 import os

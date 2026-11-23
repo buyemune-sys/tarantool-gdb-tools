@@ -208,7 +208,7 @@ class RustRun(object):
     scenarios = ()
     jit = 'on'
     cores = False
-    tt_gdb = False              # the run loads tarantool-gdb.py
+    tt_gdb = False              # the run loads the Tarantool extension
 
     @classmethod
     def env(cls):
@@ -338,7 +338,8 @@ class RustRun(object):
     def check_core(self, live):
         out = self.wd.file('core-probe.{}-{}.jsonl'.format(live['seq'],
                                                           live['tag']))
-        # tarantool-gdb.py only if the live run had it (it adds an unwinder).
+        # The Tarantool extension only if the live run had it (it adds an
+        # unwinder).
         tt = 'ljbt-probe-tt {}\n'.format(C.TT_GDB) if C.TT_GDB and \
             self.tt_gdb else ''
         opts = '--all-fibers' if 'all_fibers' in live else ''
@@ -700,7 +701,8 @@ class TestRustPlainAbort(PlainMixin, unittest.TestCase):
                                      ('vm', [DEF['err']] + bottom('error'))])
         # gdb unwinds through the Rust frames to the bottom of the fiber
         # stack: coro_init on x86_64, coro_startup on aarch64 (libcoro's
-        # entry differs by arch, see LJBT_STACK_BOTTOMS in lj_bt.py).
+        # entry differs by arch, see LJBT_STACK_BOTTOMS in
+        # luajit_backtrace_gdb.py).
         self.assertIn(names[-1], ('coro_init', 'coro_startup'))
 
     test_ffi_from_rust = test_ffi_entry = test_rec = test_rec_counts = None

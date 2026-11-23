@@ -4,16 +4,18 @@
 #   python3 tests/dbg/upstream/run_luajit.py [unittest arguments]
 #
 # Environment: LJBT_TARANTOOL (required), DBG_LUAJIT_DBG (the extension
-# under test, default: luajit_dbg.py of this repo; an old luajit-gdb.py
-# works too), DBG_UPSTREAM_TIMEOUT (seconds per gdb run, default 60; the
+# under test, default: luajit_gdb.py of this repo; the luajit_dbg.py or
+# the old luajit-gdb.py of a release works too), DBG_UPSTREAM_TIMEOUT
+# (seconds per gdb run, default 60; the
 # upstream 10 is short for lj-gc on a loaded machine), DBG_DEBUGGER
 # (gdb, the default, or lldb: the upstream file runs either), DBG_GDB,
 # DBG_LLDB, TMPDIR.  The upstream file reads its settings from the
 # environment; this sets them:
 #
 #   LUAJIT_TEST_BINARY       the tarantool binary
-#   DEBUGGER_EXTENSION_PATH  a directory with luajit_dbg.py, a link to
-#                            the extension under test
+#   DEBUGGER_EXTENSION_PATH  a directory with luajit_dbg.py (the name
+#                            the upstream file wants), a link to the
+#                            extension under test
 #   DEBUGGER_COMMAND         gdb-tarantool, gdb with tarantool.gdb, or
 #                            lldb-tarantool (by name, this directory
 #                            put in PATH)
@@ -152,7 +154,7 @@ def main():
     if not tarantool:
         sys.exit('set LJBT_TARANTOOL to a tarantool binary with DWARF')
     ext = os.path.abspath(os.environ.get('DBG_LUAJIT_DBG') or
-                          os.path.join(ROOT, 'luajit_dbg.py'))
+                          os.path.join(ROOT, 'luajit_gdb.py'))
     timeout = int(os.environ.get('DBG_UPSTREAM_TIMEOUT', 60))
     debugger = os.environ.get('DBG_DEBUGGER', 'gdb')
     if debugger not in ('gdb', 'lldb'):

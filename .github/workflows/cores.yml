@@ -4,7 +4,7 @@ name: cores
 # of GitHub's runners, amd64 and arm64 (tests/dbg/test_cores.py): gcore
 # of gdb before 18.1 loses them where glibc 2.42+ installs the stack
 # guard with madvise(MADV_GUARD_INSTALL) on Linux 6.13+ (gdb bug 33855);
-# gcore-pages (gcore_pages.py) and the kernel's core keep them.  Each
+# gcore-pages (gcore_pages_gdb.py) and the kernel's core keep them.  Each
 # runner has its own gdb (12, 15, 17), so the job also runs the groups of
 # tests/dbg with core modes and the lj-bt core layer with it.  The table
 # job puts the results of all runners in one table.
@@ -106,7 +106,7 @@ jobs:
 
       # The cores of these groups are written with gcore-pages: the
       # thread checks of tarantool hold on every runner.
-      - name: luajit_dbg.py and tarantool-gdb.py tests with gdb of ${{ matrix.os }}
+      - name: luajit_gdb.py and tarantool_gdb.py tests with gdb of ${{ matrix.os }}
         if: ${{ !cancelled() }}
         run: |
           tests/dbg/run.sh luajit tarantool 2>&1 | tee "$TMPDIR/run-dbg.log"

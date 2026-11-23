@@ -1,6 +1,6 @@
 name: dbg
 
-# The universal luajit_dbg.py and tarantool-gdb.py against the official
+# The universal luajit_gdb.py and tarantool_gdb.py against the official
 # static builds (they carry DWARF) of every Tarantool CE 3.x minor, 3.0
 # to 3.9, last patch of each: tests/dbg (every command live and on a
 # gcore core) and the vendored upstream tests (LuaJIT's debugger tests,
@@ -70,7 +70,7 @@ jobs:
           echo "TMPDIR=${{ runner.temp }}/dbg" >> "$GITHUB_ENV"
           mkdir -p "${{ runner.temp }}/dbg"
 
-      - name: luajit_dbg.py tests
+      - name: luajit_gdb.py tests
         run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
         shell: bash
 
@@ -94,8 +94,8 @@ jobs:
           exit "$rc"
         shell: bash
 
-      # The tarantool-gdb.py steps run whatever the luajit_dbg.py ones did.
-      - name: tarantool-gdb.py tests
+      # The tarantool_gdb.py steps run whatever the luajit_gdb.py ones did.
+      - name: tarantool_gdb.py tests
         if: ${{ !cancelled() }}
         run: tests/dbg/run.sh tarantool 2>&1 | tee "$TMPDIR/run-tarantool.log"; exit "${PIPESTATUS[0]}"
         shell: bash

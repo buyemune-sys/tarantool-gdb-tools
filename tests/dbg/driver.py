@@ -7,7 +7,7 @@
 #   env        extra inferior environment (live)
 #   sources    gdb scripts to source, in order
 #   deferred   source them before `file`, so that they wait for the
-#              objfile (the deferred loading of luajit_dbg.py)
+#              objfile (the deferred loading of luajit_gdb.py)
 #   breaks     commands that set the stop (live): `break`, `condition`...
 #   setup      commands after the stop, live only (`next`, `set var`)
 #   prep       commands of both modes, before cmds (`set $x = ...`)
@@ -16,7 +16,7 @@
 #              command with a cond runs only if that expression is true
 #   gcore      write a core file there after cmds (live)
 #   gcore_pages
-#              write it with gcore-pages of this gcore_pages.py, which
+#              write it with gcore-pages of this gcore_pages_gdb.py, which
 #              keeps the thread stacks gcore of gdb < 18.1 loses
 #   out        where the result goes
 #

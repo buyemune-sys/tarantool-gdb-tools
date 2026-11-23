@@ -1,6 +1,6 @@
 # gdb convenience functions the tests compare the extensions with.  They
 # read the LuaJIT structures on their own, with nothing of
-# luajit_dbg.py, so that a test does not check the extension against
+# luajit_gdb.py, so that a test does not check the extension against
 # itself.
 import gdb
 

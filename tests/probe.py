@@ -1,4 +1,5 @@
-# gdb side of the lj-bt tests: sourced after luajit_dbg.py and lj_bt.py.
+# gdb side of the lj-bt tests: sourced after the LuaJIT extension and
+# luajit_backtrace_gdb.py.
 #
 #   ljbt-probe FILE [--filter] [--core] [--thread-hop SEQS] [--seq N]
 #              [--tag T]
@@ -90,7 +91,8 @@ def probe_seq():
 
 
 def probe_ljstack(L):
-    '''Number of frames lj-stack (luajit_dbg.frames) walks; -1 if it does
+    '''Number of frames lj-stack (frames() of the LuaJIT extension)
+    walks; -1 if it does
     not terminate: frames() trusts every link, a link that does not go
     down loops it forever (lj-stack hangs the same way).'''
     try:
@@ -238,8 +240,9 @@ class ProbeCommand(gdb.Command):
 
 
 class ProbeTtCommand(gdb.Command):
-    '''ljbt-probe-tt PATH: source tarantool-gdb.py once (it needs a live
-    process, so it cannot go into the prelude).'''
+    '''ljbt-probe-tt PATH: source the Tarantool extension once (the one
+    of the releases needs a live process, so it cannot go into the
+    prelude).'''
 
     def __init__(self):
         super(ProbeTtCommand, self).__init__('ljbt-probe-tt',
@@ -248,7 +251,7 @@ class ProbeTtCommand(gdb.Command):
     def invoke(self, arg, from_tty):
         if not arg or hasattr(M, 'FiberUnwinder'):
             return
-        import gdb.printing  # noqa: F401 (tarantool-gdb.py needs it)
+        import gdb.printing  # noqa: F401 (tools/tarantool-gdb.py needs it)
         gdb.execute('source ' + arg, False, True)
 
 

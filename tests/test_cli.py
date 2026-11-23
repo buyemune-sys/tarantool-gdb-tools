@@ -215,7 +215,7 @@ class CliTest(unittest.TestCase):
 
     @unittest.skipUnless(C.TT_GDB, 'LJBT_TT_GDB is not set')
     def test_next_stop_other_fiber(self):
-        # tarantool-gdb.py came at stop 9, tt-fiber picked cli-sleeper
+        # tarantool_gdb.py came at stop 9, tt-fiber picked cli-sleeper
         # there; stop 11 is in cli-other: lj-bt and bt show the running
         # fiber, from frame #0, not the selection of the last stop.
         r = self.one(11, 'other')

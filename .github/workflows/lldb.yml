@@ -1,6 +1,6 @@
 name: lldb
 
-# luajit_dbg.py in lldb against the official static builds of every
+# luajit_gdb.py in lldb against the official static builds of every
 # Tarantool CE 3.x minor (amd64): LuaJIT's own debugger tests in their
 # lldb mode (tests/dbg/run.sh upstream, live), with lldb 18 (the one of
 # Ubuntu 24.04) and lldb 22 (apt.llvm.org), and tests/dbg/test_luajit.py
@@ -77,7 +77,7 @@ jobs:
       # variable from one (tarantool_L, 3.7+) and fails to write some
       # ("no ObjectFile plugins were able to save a core").  It reads
       # ELF cores (gdb's gcore) as lldb 22 does.
-      - name: luajit_dbg.py tests in lldb
+      - name: luajit_gdb.py tests in lldb
         if: ${{ !cancelled() && matrix.lldb != 18 }}
         run: tests/dbg/run.sh luajit 2>&1 | tee "$TMPDIR/run-luajit.log"; exit "${PIPESTATUS[0]}"
         shell: bash

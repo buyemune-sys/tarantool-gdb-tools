@@ -1,4 +1,4 @@
-# Tests of luajit_dbg.py against tarantool: every command, live and on
+# Tests of luajit_gdb.py against tarantool: every command, live and on
 # a core, the output compared with what the Lua side or gdb itself says.
 #
 # A port of test/tarantool-debugger-tests/debug-extension-tests.py of
@@ -87,11 +87,12 @@ DEFERRED = Scenario('deferred', QUIET_GC + 'print(1)\n',
                     [('arch', 'lj-arch'), ('state', 'lj-state')],
                     deferred=True)
 
-# The extension under another file name, luajit-gdb.py of the release
-# or a rename: lldb names its module after the file.  A link made once.
+# The extension under another file name, luajit_dbg.py of the releases
+# (as the upstream tests have it) or a rename: lldb names its module
+# after the file.  A name that is none of those, a link made once.
 _LINKS = tempfile.mkdtemp(prefix='dbg-links-')
 atexit.register(shutil.rmtree, _LINKS, True)
-RENAMED_DBG = os.path.join(_LINKS, 'luajit_gdb.py')
+RENAMED_DBG = os.path.join(_LINKS, 'luajit_renamed.py')
 os.symlink(os.path.abspath(H.LUAJIT_DBG), RENAMED_DBG)
 RENAMED = Scenario('renamed', QUIET_GC + 'print(1)\n', ['break lj_cf_print'],
                    [('arch', 'lj-arch'), ('state', 'lj-state'),
@@ -115,7 +116,7 @@ class TestLoad(DbgCase):
             self.check_load(res['load'])
         self.assertNoPyError(BASIC)
 
-    @unittest.skipIf(H.DEBUGGER == 'lldb', 'luajit_dbg.py has no deferred '
+    @unittest.skipIf(H.DEBUGGER == 'lldb', 'luajit_gdb.py has no deferred '
                      'loading in lldb (check_libluajit: "TODO")')
     def test_deferred(self):
         # Sourced before `file`: it waits for the objfile.
@@ -1271,7 +1272,7 @@ class TestGCStates(DbgCase):
 
 # Enums missing from the debug info ################################
 
-# The max members of the enums of luajit_dbg.py, and the two members
+# The max members of the enums of luajit_gdb.py, and the two members
 # that tell LJ_64 and LJ_GC64.
 ENUM_MAXES = ['BCM_max', 'BC__MAX', 'FF__MAX', 'MM__MAX', 'LJ_VMST__MAX',
               'IR__MAX', 'IRT__MAX', 'IRFL__MAX', 'IRFPM__MAX',
@@ -1295,7 +1296,7 @@ NOENUM = [noenum(s) for s in (BASIC, VALUES, PROTO, TRACES, TRACE_STOP)]
 ENUMS = Scenario('enums', 'print(1)\n', ['break lj_cf_print'],
                  [('check', 'dbg-enum-check')],
                  sources=[H.LUAJIT_DBG, H.ENUMCHECK])
-FALLBACK_NOTE = re.compile(r'^luajit_dbg\.py: failed to resolve .* enum '
+FALLBACK_NOTE = re.compile(r'^luajit_gdb\.py: failed to resolve .* enum '
                            r'members using (\w+), taking the built-in list\n',
                            re.M)
 

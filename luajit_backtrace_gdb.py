@@ -1,19 +1,25 @@
-# lj_bt.py -- one stitched C + Lua backtrace for LuaJIT (Tarantool) in gdb.
+# luajit_backtrace_gdb.py -- one stitched C + Lua backtrace for LuaJIT
+# (Tarantool) in gdb.
 #
-#   (gdb) source <luajit>/src/luajit_dbg.py   (luajit-gdb.py before 5db8c217)
-#   (gdb) source <tarantool>/tools/tarantool-gdb.py     (optional: fibers)
-#   (gdb) source lj_bt.py
+#   (gdb) source luajit_gdb.py
+#   (gdb) source tarantool_gdb.py                       (optional: fibers)
+#   (gdb) source luajit_backtrace_gdb.py
 #   (gdb) lj-bt [-v] [-n N] [<lua_State *>]
 #   (gdb) lj-bt --all-fibers
+#
+# The LuaJIT extension may also be the one of the LuaJIT sources of the
+# build: src/luajit_dbg.py (src/luajit-gdb.py before 5db8c217), and the
+# Tarantool one tools/tarantool-gdb.py of the release.
 #
 # gdb `source` runs this file in the same __main__ namespace as the
 # LuaJIT extension, so every top-level name here is prefixed with
 # ljbt_/LJBT to avoid clobbering the helpers we reuse.  We take from it
-# only what luajit-gdb.py (Tarantool 3.3-3.5) and luajit_dbg.py (3.6+)
-# both have: mref, gcref, gcval, G, J, funcproto, frame_ftsz, typenames,
-# itypemap, vm_state, LJ_GC64, LJ_FR2.  Bytecode and IR names, which
-# differ between LuaJIT versions, come from the enums in DWARF (or, if a
-# build has none, from the BYTECODES and IRS tables of luajit_dbg.py).
+# only what luajit-gdb.py (Tarantool 3.3-3.5), luajit_dbg.py (3.6+) and
+# luajit_gdb.py all have: mref, gcref, gcval, G, J, funcproto, frame_ftsz,
+# typenames, itypemap, vm_state, LJ_GC64, LJ_FR2.  Bytecode and IR names,
+# which differ between LuaJIT versions, come from the enums in DWARF (or,
+# if a build has none, from the BYTECODES and IRS tables of luajit_gdb.py
+# and luajit_dbg.py).
 #
 # How the two stacks are matched (see lj_err.c:err_unwind, lj_frame.h):
 #  * Every entry into the VM from C (lj_vm_call/pcall/cpcall/resume,
@@ -50,13 +56,14 @@ except ImportError:
 
 import __main__ as ljbt_lj
 
-# What lj-bt uses of the LuaJIT extension (both luajit-gdb.py and
-# luajit_dbg.py have all of it).
+# What lj-bt uses of the LuaJIT extension (luajit_gdb.py, luajit_dbg.py
+# and luajit-gdb.py have all of it).
 LJBT_NEEDED = ('mref', 'gcref', 'gcval', 'G', 'J', 'funcproto', 'frame_ftsz',
                'typenames', 'itypemap', 'vm_state', 'LJ_GC64', 'LJ_FR2')
 if not all(hasattr(ljbt_lj, n) for n in LJBT_NEEDED):
-    raise gdb.GdbError('lj_bt.py: source luajit_dbg.py (or luajit-gdb.py '
-                       'of older LuaJIT) first; missing: {}'.format(', '.join(
+    raise gdb.GdbError('luajit_backtrace_gdb.py: source luajit_gdb.py (or '
+                       'the luajit_dbg.py or luajit-gdb.py of the LuaJIT) '
+                       'first; missing: {}'.format(', '.join(
                            n for n in LJBT_NEEDED
                            if not hasattr(ljbt_lj, n))))
 
@@ -350,7 +357,7 @@ def ljbt_reset(event=None):
 
 def ljbt_running_fiber():
     '''The fiber running in the selected thread, cord_ptr->fiber, as
-    fiber() of tarantool-gdb.py reads it (but without it loaded); None
+    fiber() of tarantool_gdb.py reads it (but without it loaded); None
     where there is none.  By symbol, no expression: the stop handler
     calls it, see ljbt_on_stop.'''
     try:
@@ -370,12 +377,13 @@ def ljbt_on_stop(event):
     before gdb itself would; a `continue` there nests the next stop in
     this one.  The conf is built on first use.'''
     ljbt_reset()
-    # tarantool-gdb.py keeps the fiber picked by `tt-fiber` (or the one
-    # running when its unwinder was created) across `continue`: after a
-    # stop in another fiber `bt` and lj-bt would unwind a stale saved
-    # context.  So when the running fiber changed since the last stop, the
-    # selection goes back to it; a stepi within one fiber keeps it.  The
-    # running fiber is recorded at every stop, tarantool-gdb.py loaded or
+    # The Tarantool extension (tarantool_gdb.py, tools/tarantool-gdb.py)
+    # keeps the fiber picked by `tt-fiber` (or the one running when its
+    # unwinder was created) across `continue`: after a stop in another
+    # fiber `bt` and lj-bt would unwind a stale saved context.  So when
+    # the running fiber changed since the last stop, the selection goes
+    # back to it; a stepi within one fiber keeps it.  The running fiber
+    # is recorded at every stop, the Tarantool extension loaded or
     # not: it is usually loaded at a stop, and its selection is of that
     # stop, not of the next one.
     cur = ljbt_running_fiber()
@@ -1253,7 +1261,7 @@ def ljbt_cur_L(g):
 
 
 def ljbt_fiber_selection():
-    '''(selected fiber, running fiber) if tarantool-gdb.py is loaded.'''
+    '''(selected fiber, running fiber) if tarantool_gdb.py is loaded.'''
     FU = getattr(ljbt_lj, 'FiberUnwinder', None)
     fib = getattr(ljbt_lj, 'fiber', None)
     if FU is None or fib is None:
@@ -2308,7 +2316,7 @@ def ljbt_main_L():
 
 
 def ljbt_cframe_owner(addr):
-    '''The fiber whose C stack holds addr (needs tarantool-gdb.py).'''
+    '''The fiber whose C stack holds addr (needs tarantool_gdb.py).'''
     Cord = getattr(ljbt_lj, 'Cord', None)
     if Cord is None:
         return None
@@ -2524,7 +2532,7 @@ the real call nesting.  C frames keep gdb's frame numbers; the Lua
 frames that run inside a VM frame #N are numbered #N.1, #N.2, ...
 
 By default the Lua side is the current coroutine (G->cur_L); after
-`tt-fiber <id>` (tools/tarantool-gdb.py) it is the selected fiber.
+`tt-fiber <id>` (tarantool_gdb.py) it is the selected fiber.
 Lines starting with "!!" mark inconsistencies between the two stacks.
 
   -v             show frame link addresses and types
@@ -2607,7 +2615,7 @@ With -v the frames whose callee cannot be verified say so.
         Cord = getattr(ljbt_lj, 'Cord', None)
         if FU is None or Cord is None:
             raise gdb.GdbError('lj-bt --all-fibers: source '
-                               'tools/tarantool-gdb.py first')
+                               'tarantool_gdb.py first')
         u = FU.instance()
         orig = u.fiber()
         docs = []

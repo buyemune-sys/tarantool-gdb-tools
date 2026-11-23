@@ -3,7 +3,7 @@
 # does not load: --noconftest), pointed at this repository:
 #
 #   tarantool_bin       $TARANTOOL_BIN, else $LJBT_TARANTOOL
-#   tarantool_gdb_ext   $DBG_TT_GDB, else the tarantool-gdb.py of this
+#   tarantool_gdb_ext   $DBG_TT_GDB, else the tarantool_gdb.py of this
 #                       repository
 #   tarantool_gdb       utils.GdbSession of the vendored utils.py, with
 #                       $DBG_GDB (default gdb)
@@ -38,7 +38,7 @@ def tarantool_bin():
 @pytest.fixture(scope='session')
 def tarantool_gdb_ext():
     return os.path.abspath(os.environ.get('DBG_TT_GDB') or
-                           os.path.join(ROOT, 'tarantool-gdb.py'))
+                           os.path.join(ROOT, 'tarantool_gdb.py'))
 
 
 @pytest.fixture(scope='session')

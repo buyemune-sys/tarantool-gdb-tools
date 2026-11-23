@@ -1,29 +1,30 @@
 #!/bin/sh
-# Run the tests of luajit_dbg.py and tarantool-gdb.py.
+# Run the tests of luajit_gdb.py and tarantool_gdb.py.
 #
 #   tests/dbg/run.sh [GROUP...] [-- unittest or pytest arguments]
 #
 # Groups:
-#   luajit    luajit_dbg.py: every command live and on a core (default)
+#   luajit    luajit_gdb.py: every command live and on a core (default)
 #   upstream  the vendored LuaJIT debugger tests (upstream/luajit), run
 #             against tarantool by upstream/run_luajit.py
-#   tarantool tarantool-gdb.py: every command and pretty-printer live
+#   tarantool tarantool_gdb.py: every command and pretty-printer live
 #             and on a core
 #   upstream-tarantool
 #             the vendored tests of tarantool's tools/tarantool-gdb.py
 #             (upstream/tarantool), run with pytest by
 #             upstream/run_tarantool.py
 #   cores     the thread stacks in cores of tarantool: gcore, gcore-pages
-#             (gcore_pages.py), the kernel's core (test_cores.py)
+#             (gcore_pages_gdb.py), the kernel's core (test_cores.py)
 #   all       every group
 #
 # Environment (see tests/dbg/harness.py): LJBT_TARANTOOL is required (a
 # tarantool binary with DWARF, as tests/fetch.sh prints); DBG_LUAJIT_DBG
-# and DBG_TT_GDB run the tests against another luajit_dbg.py or
-# tarantool-gdb.py, e.g. the upstream one, to see a test of a fix fail
-# before the fix; DBG_GCORE_PAGES, DBG_GDB, DBG_KEEP, DBG_VERBOSE,
-# DBG_UPSTREAM_TIMEOUT, DBG_PYTHON (a python3 with pytest for
-# upstream-tarantool), DBG_CORES_SUMMARY (test_cores.py), TMPDIR.
+# and DBG_TT_GDB run the tests against another LuaJIT or Tarantool
+# extension than luajit_gdb.py and tarantool_gdb.py, e.g. the upstream
+# one, to see a test of a fix fail before the fix; DBG_GCORE_PAGES,
+# DBG_GDB, DBG_KEEP, DBG_VERBOSE, DBG_UPSTREAM_TIMEOUT, DBG_PYTHON (a
+# python3 with pytest for upstream-tarantool), DBG_CORES_SUMMARY
+# (test_cores.py), TMPDIR.
 # DBG_DEBUGGER=lldb runs the luajit and upstream groups in lldb
 # (DBG_LLDB: the lldb binary; gdb is still needed, see harness.py).
 #

@@ -1,9 +1,9 @@
-# Sourced into gdb before luajit_dbg.py or tarantool-gdb.py: makes the
+# Sourced into gdb before luajit_gdb.py or tarantool_gdb.py: makes the
 # members listed in $DBG_HIDE_ENUMS (comma-separated) unknown to
 # gdb.parse_and_eval, as if the debug info had not their enums (an enum
 # used only through its constants may be left out of it,
 # tarantool/tarantool#13094), and the types of $DBG_HIDE_TYPES unknown
-# to gdb.lookup_type.  The tests of tarantool-gdb.py also hide
+# to gdb.lookup_type.  The tests of tarantool_gdb.py also hide
 # thread-local variables this way (cord_ptr, &cord_ptr...).
 import os
 

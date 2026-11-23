@@ -157,7 +157,7 @@ class Cli(object):
         return None
 
     def sleeper(self, n):
-        # tarantool-gdb.py is loaded here, at a stop: its selection is of
+        # tarantool_gdb.py is loaded here, at a stop: its selection is of
         # this stop (stop 11 checks that it does not outlive it).
         if not self.tt:
             return

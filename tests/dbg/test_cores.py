@@ -1,5 +1,5 @@
 # The stacks of the threads of tarantool in a core: gcore, gcore-pages
-# (gcore_pages.py) and the kernel's core, all of the same stop.
+# (gcore_pages_gdb.py) and the kernel's core, all of the same stop.
 #
 # Since glibc 2.42 the guard page of a thread stack is installed with
 # madvise(MADV_GUARD_INSTALL) (Linux 6.13+) inside the stack mapping, at
@@ -42,7 +42,7 @@ import harness as H
 
 STACKS = os.path.join(H.HERE, 'stacks.py')
 GCORE_PAGES = H.GCORE_PAGES if H.GCORE_PAGES != 'plain' else \
-    os.path.join(H.ROOT, 'gcore_pages.py')
+    os.path.join(H.ROOT, 'gcore_pages_gdb.py')
 SUMMARY = os.environ.get('DBG_CORES_SUMMARY')
 
 # box.cfg starts the wal, iproto and applier threads, fio the coio ones;
