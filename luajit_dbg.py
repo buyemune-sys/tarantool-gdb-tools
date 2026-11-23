@@ -1,4 +1,8 @@
 # Debug extension for LuaJIT post-mortem analysis.
+# The universal one of github.com/buyemune-sys/tarantool-gdb-tools: for
+# every Tarantool 3.x.  From src/luajit_dbg.py of tarantool/luajit, MIT
+# license (Copyright (C) 2005-2017 Mike Pall, COPYRIGHT of LuaJIT); see
+# NOTICE of that repository.
 # To use in GDB:
 # `source <path-to-repo>/src/luajit_dbg.py'
 # To use in LLDB:
