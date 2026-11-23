@@ -1,17 +1,24 @@
 #!/bin/sh
 # Re-sync the vendored upstream tests:
 #
-#   tests/dbg/upstream/sync.sh luajit [<ref>] [--write]
+#   tests/dbg/upstream/sync.sh luajit|tarantool|tarantool-mp [<ref>] [--write]
 #
 # fetches the files from <ref> of the upstream repository (a branch, a
 # tag or a commit; the default is the one in README.md) and shows the
 # diff against the vendored copies; --write replaces them.  Then put the
-# commit in README.md.  DBG_LUAJIT_GIT, if set, is a local clone of
-# tarantool/luajit used instead of the network (`git show <ref>:<path>`;
-# fetch the ref into it first).
+# commit in README.md.
+#
+#   luajit        tarantool/luajit test/tarantool-debugger-tests/
+#   tarantool     tarantool/tarantool test/gdb/ (PR #13078)
+#   tarantool-mp  tarantool/tarantool tools/test-tarantool-gdb.py (PR #9665)
+#
+# DBG_LUAJIT_GIT and DBG_TARANTOOL_GIT, if set, are local clones of
+# tarantool/luajit and tarantool/tarantool used instead of the network
+# (`git show <ref>:<path>`; fetch the ref into it first, e.g.
+# `git fetch origin pull/13078/head`).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-[ $# -ge 1 ] || { echo "usage: $0 luajit [<ref>] [--write]" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "usage: $0 luajit|tarantool|tarantool-mp [<ref>] [--write]" >&2; exit 2; }
 what=$1
 shift
 ref= write=
@@ -28,6 +35,23 @@ luajit)
     : "${ref:=elhimov/gh-13094-dbg-avoid-hardcoded-enums}"
     # upstream path -> vendored path
     files="test/tarantool-debugger-tests/debug-extension-tests.py=luajit/debug-extension-tests.py"
+    ;;
+tarantool)
+    repo=tarantool/tarantool
+    git=${DBG_TARANTOOL_GIT:-}
+    # The head of PR #13078 (elhimov/gh-13076-add-fiber-switch-tests).
+    : "${ref:=fa8bd1760306454649f128e261a37bfa48fc53b8}"
+    files=
+    for f in conftest.py test_gdb.py utils.py ut_tt_fiber.py ut_tl_var.py; do
+        files="$files test/gdb/$f=tarantool/$f"
+    done
+    ;;
+tarantool-mp)
+    repo=tarantool/tarantool
+    git=${DBG_TARANTOOL_GIT:-}
+    # The head of PR #9665 (the MsgPack refactor).
+    : "${ref:=4f7e2fff955286f0373c5e4ecba86985fec78d38}"
+    files="tools/test-tarantool-gdb.py=tarantool/test-tarantool-gdb.py"
     ;;
 *)
     echo "unknown upstream: $what" >&2
@@ -51,6 +75,7 @@ for f in $files; do
     else
         rc=1
         if [ -n "$write" ]; then
+            mkdir -p "$(dirname "$dst")"
             cp "$new" "$dst"
             echo "sync.sh: $dst updated from $repo $ref"
         fi
