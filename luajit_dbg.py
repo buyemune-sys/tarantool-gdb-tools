@@ -489,6 +489,11 @@ class _LLDBDebugger(Debugger):
                 if (self.version < 17 or self.version > 19) or \
                    ltp.GetTypeClass() != lldb.eTypeClassArray:
                     pass
+                elif lldbval.sbvalue.GetLoadAddress() == \
+                        lldb.LLDB_INVALID_ADDRESS:
+                    # Data, not memory: a table of the file on a core
+                    # (_from_file()).
+                    return lldb.value(lldbval.sbvalue.GetChildAtIndex(key))
                 else:
                     ptr_tp = ltp.GetArrayElementType().GetPointerType()
                     lldbval = self._lldb_value_from_raw(
@@ -662,6 +667,32 @@ class _LLDBDebugger(Debugger):
     def address(self, obj):
         return lldb.value(obj.sbvalue.address_of)
 
+    def _from_file(self, symbol, sbvalue):
+        '''A const table (lj_bc_mode, lj_ir_mode) on a core, read from
+        the executable.  A core has no read-only file-backed pages,
+        neither the kernel's nor gcore's; gdb reads them from the file,
+        lldb only when asked (SBTarget.ReadMemory, which still sets the
+        error of the core).  None if the core has the table.'''
+        err = lldb.SBError()
+        sbvalue.GetData().GetUnsignedInt8(err, 0)
+        if err.Success():
+            return None
+        # The type is often `const uint16_t []` of a header, with no
+        # size: the symbol has it.
+        el = sbvalue.GetType().GetArrayElementType()
+        size = sbvalue.GetAddress().GetSymbol().GetSize()
+        if not el.GetByteSize() or not size:
+            return None
+        tp = el.GetArrayType(size // el.GetByteSize())
+        raw = self.target.ReadMemory(sbvalue.GetAddress(), tp.GetByteSize(),
+                                     err)
+        if not raw or len(raw) != tp.GetByteSize():
+            return None
+        data = lldb.SBData()
+        data.SetData(err, raw, self.target.GetByteOrder(),
+                     self.target.GetAddressByteSize())
+        return lldb.value(self.target.CreateValueFromData(symbol, data, tp))
+
     def lookup_global(self, symbol):
         sbvalue = self.target.FindFirstGlobalVariable(symbol)
         if sbvalue.IsValid() and sbvalue.GetError().Fail():
@@ -680,6 +711,11 @@ class _LLDBDebugger(Debugger):
                     sbvalue = v
                     break
         tp = sbvalue.GetType()
+        if tp.GetTypeClass() == lldb.eTypeClassArray and \
+           self.target.GetProcess().GetPluginName() != 'gdb-remote':
+            rodata = self._from_file(symbol, sbvalue)
+            if rodata is not None:
+                return rodata
         # XXX: LLDB in versions 17 - 19 can't use an array object
         # as the initializer for `lldb.value` since `GetValue()`
         # for it returns `None` leading to the invalid result.
