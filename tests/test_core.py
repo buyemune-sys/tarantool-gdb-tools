@@ -10,6 +10,7 @@
 
 import os
 import re
+import subprocess
 import unittest
 
 import common as C
@@ -83,6 +84,8 @@ class CoreMixin(object):
         snaps = [r for r in C.read_jsonl(self.wd.file('snaps.jsonl'))
                  if r['seq'] == HOP]
         self.assertEqual(len(snaps), 1, snaps)
+        self.assertIn('trace', snaps[0], 'the loop of HOP has no trace '
+                      'after the stop: the stop was in another one')
         self.assertEqual(snaps[0]['trace'], tno)
         fr2 = 1 if C.IS_GC64 else 0
 
@@ -138,6 +141,32 @@ class CoreMixin(object):
         self.assertEqual(C.lua_lines(hop['bt']), C.lua_lines(hop['text']))
         self.assertTrue(C.lua_lines(hop['bt']), hop['bt'])
         self.assertEqual(C.mark_lines(hop['bt']), [])
+
+
+class TestHotChain(unittest.TestCase):
+    '''The hot loop of HOP gets its trace whatever the hot counters hold
+    (ubuntu-24.04, cores.yml run 45154577020: KeyError 'trace', the loop
+    had none after 30 rounds).  tarantool runs the chain alone, no gdb,
+    after every counter is set to 59999 (hotloop=30000), as the penalties
+    of aborted traces leave one (lj_trace.c penalty_pc, up to 60000).'''
+
+    def test_penalized_counters(self):
+        wd = C.WorkDir('hot')
+        self.addCleanup(wd.cleanup)
+        prog = gen.Program(True, prelude=["jit.opt.start('hotloop=30000')"])
+        prog.add(gen.Chain(1, ['jit', 'call'], 'ffi', oracle=False,
+                           hot=True))
+        src = wd.write('chains.lua', prog.render())
+        p = subprocess.run(
+            [C.TARANTOOL, src], stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            universal_newlines=True, timeout=120, cwd=wd.path,
+            env=dict(os.environ, TMPDIR=wd.path, LJBT_WORKDIR=wd.path,
+                     LJBT_LUA_DIR=C.LUA))
+        snaps = C.read_jsonl(wd.file('snaps.jsonl'))
+        self.assertEqual(len(snaps), 1, p.stdout[-2000:])
+        self.assertIn('trace', snaps[0], 'the hot loop got no trace in '
+                      '30 rounds')
 
 
 for _jit in C.jit_modes():

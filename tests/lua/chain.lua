@@ -58,6 +58,19 @@ function H.hot(fn)
   return last == 'JFORL' or last == 'IFORL'
 end
 
+-- Every hot counter back to its start, hotloop * 2 - 1: LuaJIT sets them
+-- all when the hotloop parameter is set (lib_jit.c jitopt_param ->
+-- lj_dispatch_init_hotcount); 56 is its default, the one the program
+-- runs with.  The penalty of an aborted trace goes to the counter of its
+-- start and doubles at each abort there, up to 60000 (penalty_pc): a loop
+-- whose counter it shares then gets its trace after up to 30000
+-- iterations.  Before this reset the hot chain of tests/test_core.py
+-- (3000 iterations at most) ran the last one without the trace in about
+-- 2% of the runs.
+function H.reset_hotcounts()
+  jit.opt.start('hotloop=56')
+end
+
 local function append(file, rec)
   local fh = assert(io.open(workdir .. '/' .. file, 'a'))
   fh:write(json.encode(rec) .. '\n')

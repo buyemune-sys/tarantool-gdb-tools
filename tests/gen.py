@@ -133,9 +133,11 @@ def random_chain(seq, rng, oracle=True):
 class Program(object):
     '''One Lua file with many chains and a driver calling them in turn.'''
 
-    def __init__(self, jit_on, driver='main'):
+    def __init__(self, jit_on, driver='main', prelude=()):
         self.jit_on = jit_on
         self.driver = driver
+        # Lua lines after H.setup, before the chains.
+        self.prelude = list(prelude)
         self.lines = []
         self.chains = []
 
@@ -155,6 +157,8 @@ class Program(object):
         e("local C = ffi.C")
         e("local fiber = require('fiber')")
         e('H.setup({})'.format('true' if self.jit_on else 'false'))
+        for s in self.prelude:
+            e(s)
         for ch in self.chains:
             self.render_chain(ch)
         dline = e('local function D()')
@@ -462,6 +466,10 @@ class Program(object):
                 # 30, 3000 iterations: a hot counter up to 6000); then its
                 # last iteration goes on down the chain, in the trace.  The
                 # rounds are a repeat loop: H.hot looks at the last FORL.
+                # The hot counters start afresh (H.reset_hotcounts): the
+                # penalties of other traces in them, up to 60000, left the
+                # loop with no trace by the 30th round.
+                e('  H.reset_hotcounts()')
                 e('  local args = {}')
                 e('  for i = 1, 100 do args[i] = 2000 end')
                 e('  local r')
