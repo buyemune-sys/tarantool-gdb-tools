@@ -728,7 +728,10 @@ class KernelCrash(object):
 
 CRASH_KERNEL = KernelCrash(CRASH)
 
-RX_BT = re.compile(r'^#(\d+) +(?:(0x[0-9a-f]+) in )?([\w:<>~.]+)', re.M)
+# A frame of bt.  gdb marks a return address it took a pointer
+# authentication code off with " [PAC]" (AArch64, glibc of Ubuntu 26.04).
+RX_BT = re.compile(r'^#(\d+) +(?:(0x[0-9a-f]+)(?: \[PAC\])? in )?'
+                   r'([\w:<>~.]+)', re.M)
 # A C frame of tarantool's backtrace: its pc and function.
 RX_TT_BT = re.compile(r'^#\d+\s+(0x[0-9a-f]+) in ([^(+]+)')
 
@@ -737,6 +740,34 @@ def bt_frames(out):
     '''[(level, pc or None, function)] of a bt.'''
     return [(int(n), int(pc, 16) if pc else None, f)
             for n, pc, f in RX_BT.findall(out)]
+
+
+class TestBtFrames(unittest.TestCase):
+    '''bt_frames() on what gdb prints, without gdb: the crash of CRASH
+    on ubuntu-26.04-arm (gdb 17.1, cores.yml run 45297778873).'''
+
+    def test_pac(self):
+        out = (
+            '#0  __pthread_kill_implementation (threadid=281474841976864, '
+            'signo=signo@entry=6, no_tid=no_tid@entry=0) at '
+            './nptl/pthread_kill.c:44\n'
+            '#1  0x0000fffff7cde174 [PAC] in __pthread_kill_internal '
+            '(threadid=<optimized out>, signo=6) at ./nptl/pthread_kill.c:89\n'
+            '#2  0x0000fffff7c885fc in __GI_raise (sig=sig@entry=6) at '
+            '../sysdeps/posix/raise.c:26\n'
+            '#4  0x00000000005fed40 [PAC] in crash_signal_cb (signo=11, '
+            'siginfo=<optimized out>, context=<optimized out>) at '
+            '/tarantool/src/lib/core/crash.c:204\n'
+            '#5  0x0000fffff7ffaa20 in <signal handler called> ()\n'
+            '#6  __memcpy_sve () at ../sysdeps/aarch64/multiarch/'
+            'memcpy_sve.S:71\n')
+        self.assertEqual(bt_frames(out), [
+            (0, None, '__pthread_kill_implementation'),
+            (1, 0xfffff7cde174, '__pthread_kill_internal'),
+            (2, 0xfffff7c885fc, '__GI_raise'),
+            (4, 0x5fed40, 'crash_signal_cb'),
+            (5, 0xfffff7ffaa20, '<signal'),
+            (6, None, '__memcpy_sve')])
 
 
 class CrashChecks(object):
