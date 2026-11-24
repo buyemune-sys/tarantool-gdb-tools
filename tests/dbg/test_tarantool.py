@@ -748,6 +748,24 @@ class KernelCore(object):
 # At the SIGABRT stop `continue`: the signal kills the process.
 CRASH_KERNEL = KernelCore(CRASH, 'continue')
 
+# The same with an inline top on every arch, from tarantool's own DWARF:
+# the main fiber stops in fiber.sleep(), at fiber_yield inlined into
+# fiber_yield_timeout (the static builds of 3.0.2 - 3.9.0 have that copy
+# on x86_64 and AArch64; `break fiber_yield` stops at its start, which
+# gdb shows as inline frame 0 for a breakpoint on that function).  The
+# kernel's core: SIGQUIT there, which is not tarantool's.
+INLINE_LUA = FIBERS_LUA + '''
+fiber.sleep(0.001) -- the stop
+os.exit(0)
+'''
+INLINE_SETUP = FIBERS_SETUP + [
+    'tbreak fiber_yield if $_streq(main_cord.fiber->name, "tt-main")',
+    'continue',
+]
+INLINE = Scenario('inline', INLINE_LUA, [FIBERS_BREAK], CRASH_CMDS,
+                  setup=INLINE_SETUP, sources=SOURCES)
+INLINE_KERNEL = KernelCore(INLINE, 'signal SIGQUIT')
+
 # Where glibc's abort() stops under inline frames, with its debug info:
 # x86_64.  On AArch64 (glibc 2.35, 2.39, 2.43 of Ubuntu 22.04, 24.04 and
 # 26.04, dbg.yml run 45297778863) __pthread_kill_implementation is a
@@ -800,21 +818,21 @@ class TestBtFrames(unittest.TestCase):
             (6, None, '__memcpy_sve')])
 
 
-class CrashChecks(object):
-    '''tt-fiber at the crash of CRASH, in MODE: live, core (the gcore core
-    of the live stop) or kernel (the kernel's core of another live run,
-    killed by the SIGABRT).'''
-    MODE = None
+class SwitchChecks(object):
+    '''tt-fiber at the stop of SCEN, in MODE: live, core (the gcore core
+    of the live stop) or kernel (KERNEL: the kernel's core of another
+    live run to that stop).'''
+    SCEN = KERNEL = MODE = None
 
     def crash(self):
         '''(the result of the commands, the live run) of MODE.'''
         if self.MODE == 'kernel':
-            r = CRASH_KERNEL.run()
+            r = self.KERNEL.run()
             if r['core'] is None:
                 H.precondition(self, 'kernel-core', r['reason'])
             res, live = r['core'], r['live']
         else:
-            res, live = CRASH.run()[self.MODE], CRASH.run()['live']
+            res, live = self.SCEN.run()[self.MODE], self.SCEN.run()['live']
         self.assertIsNone(res.get('fatal'), res.get('fatal'))
         self.assertIsNone(live.get('fatal'), live.get('fatal'))
         return res, live
@@ -827,35 +845,14 @@ class CrashChecks(object):
             return r['out']
         return H.strip_core_warnings(r['out'])
 
-    def test_crashed(self):
-        # The stop, or the signal the core was written for: the SIGABRT
-        # of abort().
-        self.assertEqual(self.cmd('signal'), 6)
-
-    def test_inline_top(self):
-        # The precondition of the scenario: inline frames above the
-        # innermost frame the fiber unwinder is asked about.
+    def top(self):
+        '''[[level, type, function]] of the top frames, and how many of
+        them are inline ones.'''
         top = [s.split(' ', 2) for s in self.cmd('top').strip().split('\n')]
         inline = 0
         while inline < len(top) and top[inline][1] == 'INLINE_FRAME':
             inline += 1
-        if inline == 0 and not GLIBC_INLINE_TOP:
-            # No frame above the one the unwinder is asked about first:
-            # the bug of #36 cannot happen at this crash.
-            self.assertEqual(top[0][1], 'NORMAL_FRAME', top)
-            self.skipTest('glibc-inline-top: none on {} (glibc does not '
-                          'inline __pthread_kill_implementation there, frame '
-                          '0 is a normal one: {})'.format(H.ARCH, top[:2]))
-        if inline == 0:
-            libc = [s for s in self.cmd('libs').split('\n')
-                    if re.search(r'/libc\.so\.6$', s.strip())]
-            if not libc or '(*)' in libc[0]:
-                why = 'gdb has no debug info for libc.so.6 (libc6-dbg)'
-            else:
-                why = 'gdb has the debug info of libc.so.6'
-            H.precondition(self, 'inline-top', '{}: no inline frame at the '
-                           'top of the crash ({})'.format(why, top))
-        self.assertEqual(top[inline][1], 'NORMAL_FRAME', top)
+        return top, inline
 
     def test_switch(self):
         # bt after tt-fiber N is the stack of fiber N: the one gdb showed
@@ -907,6 +904,69 @@ class CrashChecks(object):
         self.assertEqual(self.cmd('back.bt'), top)
         self.assertEqual(self.cmd('ljbt.set.bt'), self.cmd('sleeper.bt'))
         self.assertEqual(self.cmd('ljbt.reset.bt'), top)
+
+
+class CrashChecks(SwitchChecks):
+    SCEN, KERNEL = CRASH, CRASH_KERNEL
+
+    def test_crashed(self):
+        # The stop, or the signal the core was written for: the SIGABRT
+        # of abort().
+        self.assertEqual(self.cmd('signal'), 6)
+
+    def test_inline_top(self):
+        # The precondition of the scenario: inline frames above the
+        # innermost frame the fiber unwinder is asked about.
+        top, inline = self.top()
+        if inline == 0 and not GLIBC_INLINE_TOP:
+            # No frame above the one the unwinder is asked about first:
+            # the bug of #36 cannot happen at this crash.
+            self.assertEqual(top[0][1], 'NORMAL_FRAME', top)
+            self.skipTest('glibc-inline-top: none on {} (glibc does not '
+                          'inline __pthread_kill_implementation there, frame '
+                          '0 is a normal one: {}); TestInline* has an inline '
+                          'top'.format(H.ARCH, top[:2]))
+        if inline == 0:
+            libc = [s for s in self.cmd('libs').split('\n')
+                    if re.search(r'/libc\.so\.6$', s.strip())]
+            if not libc or '(*)' in libc[0]:
+                why = 'gdb has no debug info for libc.so.6 (libc6-dbg)'
+            else:
+                why = 'gdb has the debug info of libc.so.6'
+            H.precondition(self, 'inline-top', '{}: no inline frame at the '
+                           'top of the crash ({})'.format(why, top))
+        self.assertEqual(top[inline][1], 'NORMAL_FRAME', top)
+
+
+class InlineChecks(SwitchChecks):
+    SCEN, KERNEL = INLINE, INLINE_KERNEL
+
+    def test_inline_top(self):
+        # The precondition: the stop is in fiber_yield inlined into
+        # fiber_yield_timeout, frame 0 an inline one.
+        top, inline = self.top()
+        if inline == 0:
+            H.precondition(self, 'inline-top', 'this build has no fiber_yield '
+                           'inlined where fiber.sleep() yields, the stop is '
+                           'in its own copy ({})'.format(top[:2]))
+        self.assertEqual(top[0][2], 'fiber_yield', top)
+        self.assertEqual(top[inline][1], 'NORMAL_FRAME', top)
+        self.assertEqual(top[inline][2], 'fiber_yield_timeout', top)
+
+
+class TestInlineLive(InlineChecks, DbgCase):
+    MODE = 'live'
+    SCENARIOS = (INLINE,)
+
+
+class TestInlineCore(InlineChecks, DbgCase):
+    MODE = 'core'
+    SCENARIOS = (INLINE,)
+
+
+class TestInlineKernelCore(InlineChecks, DbgCase):
+    MODE = 'kernel'
+    SCENARIOS = (INLINE_KERNEL,)
 
 
 class TestCrashLive(CrashChecks, DbgCase):
