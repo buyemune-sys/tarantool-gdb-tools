@@ -247,7 +247,10 @@ class Scenario(object):
         args.update(kw)
         return Scenario(name, **args)
 
-    def _gdb(self, wd, plan, tag):
+    def _gdb(self, wd, plan, tag, preexec=None):
+        '''Run the plan; preexec runs in the child before gdb (as
+        preexec_fn: the core limit of a run that lets the kernel write a
+        core).'''
         plan = dict(plan, out=os.path.join(wd, tag + '.json'))
         pfile = os.path.join(wd, tag + '.plan.json')
         with open(pfile, 'w') as fh:
@@ -259,7 +262,8 @@ class Scenario(object):
         p = subprocess.run(cmd,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            stdin=subprocess.DEVNULL, universal_newlines=True,
-                           timeout=self.timeout, env=env, cwd=wd)
+                           timeout=self.timeout, env=env, cwd=wd,
+                           preexec_fn=preexec)
         with open(os.path.join(wd, tag + '.gdb.log'), 'w') as fh:
             fh.write(p.stdout)
         try:

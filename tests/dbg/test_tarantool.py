@@ -12,7 +12,6 @@
 
 import functools
 import glob
-import json
 import os
 import re
 import shutil
@@ -594,41 +593,48 @@ def thread_outs(case, scen, key):
 
 # tt-fiber at a crash (#36): an FFI NULL write, and tarantool's crash
 # handler calls abort().  Where gdb has the debug info of glibc 2.34+,
-# the top frames are inline ones: __pthread_kill_implementation and
-# __pthread_kill_internal above __pthread_kill.  Live (gdb stops at the
-# SIGSEGV, then at the SIGABRT of abort()), on the gcore core of that
-# stop, and on the core the kernel writes when the script crashes with
-# no gdb.  Two fibers wait; the Lua side records their C frames as
-# tarantool's own backtrace sees them.  fio starts the coio threads: a
-# thread to switch to and back.
-CRASH_LUA = '''
-local ffi = require('ffi')
+# the top frames are inline ones on x86_64: __pthread_kill_implementation
+# and __pthread_kill_internal above __pthread_kill.  Live (gdb stops at
+# the SIGSEGV, then at the SIGABRT of abort()), on the gcore core of that
+# stop, and on the core the kernel writes when the SIGABRT kills the
+# process (KernelCore).  fio starts the coio threads: a thread to switch
+# to and back.
+#
+# Two fibers wait.  The oracle of their stacks is gdb's own bt of each
+# one when it yielded, the fiber running then: a break at fiber_yield
+# while it is the running fiber (FIBERS_SETUP), with no saved context
+# and no tarantool_gdb.py in the unwinding.
+FIBERS_LUA = '''
 local fiber = require('fiber')
 
 require('fio').stat('.')
+fiber.self():name('tt-main')
 local sleeper = fiber.new(function() fiber.sleep(1000) end)
 sleeper:name('tt-sleeper')
 local cond = fiber.cond()
 local waiter = fiber.new(function() cond:wait() end)
 waiter:name('tt-waiter')
 fiber.yield()
-ORACLE.running = fiber.self():id()
-ORACLE.fibers = {}
--- The C frames: "#1  0x61a765 in lbox_fiber_sleep+197" (an "L" one is
--- a Lua frame).
-local info = fiber.info({backtrace = true})
-for _, f in ipairs({sleeper, waiter}) do
-    local bt = {}
-    for _, frame in ipairs(info[f:id()].backtrace or {}) do
-        if frame.C ~= nil then
-            table.insert(bt, frame.C)
-        end
-    end
-    ORACLE.fibers[f:name()] = {fid = f:id(), bt = bt}
-end
-oracle_write()
-ffi.cast('int *', 0)[0] = 1 -- the crash
 '''
+
+CRASH_LUA = FIBERS_LUA + '''
+require('ffi').cast('int *', 0)[0] = 1 -- the crash
+'''
+
+FIBERS_BREAK = 'break fiber_yield if {}'.format(' || '.join(
+    '$_streq(main_cord.fiber->name, "{}")'.format(n)
+    for n in ('tt-sleeper', 'tt-waiter')))
+# The two stops at FIBERS_BREAK, the first one is that of `run`.
+FIBERS_SETUP = [
+    'bt', 'eval:main_cord.fiber->fid', 'continue',
+    'bt', 'eval:main_cord.fiber->fid', 'delete',
+]
+
+
+def fiber_bts(setup):
+    '''{fid: [(level, pc or None, function)]}: gdb's own bt of each fiber
+    at its fiber_yield, from the results of FIBERS_SETUP.'''
+    return dict((setup[i + 1][1], bt_frames(setup[i][1])) for i in (0, 3))
 
 
 def tt_fiber(name):
@@ -666,26 +672,32 @@ CRASH_CMDS = [
     ('ljbt.reset.bt', 'bt'),
 ]
 
-# No break: gdb stops at the SIGSEGV; the SIGABRT of abort() is the stop.
-# A fiber selected at the SIGSEGV stays selected at the SIGABRT (live
-# only); the commands start from the running fiber.
-CRASH_SETUP = [
+# gdb stops at the fibers' yields, then at the SIGSEGV; the SIGABRT of
+# abort() is the stop.  A fiber selected at the SIGSEGV stays selected
+# at the SIGABRT (live only); the commands start from the running fiber.
+CRASH_SETUP = FIBERS_SETUP + [
+    'continue',
     tt_fiber('tt-sleeper'),
     'continue',
     'bt',
     'eval "tt-fiber %d", main_cord.fiber->fid',
 ]
-CRASH = Scenario('crash', CRASH_LUA, [], CRASH_CMDS, setup=CRASH_SETUP,
-                 sources=SOURCES)
+CRASH = Scenario('crash', CRASH_LUA, [FIBERS_BREAK], CRASH_CMDS,
+                 setup=CRASH_SETUP, sources=SOURCES)
 
 
-class KernelCrash(object):
-    '''The script of a scenario run with no gdb: it crashes and the kernel
-    writes its core.  run(): {'core': the result of the commands of the
-    scenario on that core, 'oracle'} or {'reason': why there is none}.'''
+class KernelCore(object):
+    '''The live run of a scenario, to its stop, then kill there lets the
+    kernel write the core of the process (a signal whose default action
+    dumps one).  run(): {'core': the result of the commands of the
+    scenario on that core, 'live': the result of the live run} or
+    {'reason': why there is no core}.'''
 
-    def __init__(self, scen):
+    PID = "python gdb.write('%d\\n' % gdb.selected_inferior().pid)"
+
+    def __init__(self, scen, kill):
         self.scen = scen
+        self.kill = kill
         self._res = None
 
     def run(self):
@@ -699,24 +711,31 @@ class KernelCrash(object):
         script = os.path.join(wd, 'script.lua')
         with open(script, 'w') as fh:
             fh.write(self.scen.text())
-        with open(os.path.join(wd, 'tarantool.out'), 'w') as out:
-            p = subprocess.Popen([H.TARANTOOL, script], cwd=wd,
-                                 stdin=subprocess.DEVNULL, stdout=out,
-                                 stderr=subprocess.STDOUT,
-                                 preexec_fn=raise_core_limit)
-            p.wait(timeout=self.scen.timeout)
-        found = glob.glob(core_glob(pattern, p.pid, wd))
+        plan = {'binary': H.TARANTOOL, 'args': [script], 'cwd': wd,
+                'env': self.scen.env, 'sources': self.scen.sources,
+                'deferred': self.scen.deferred, 'breaks': self.scen.breaks,
+                'setup': self.scen.setup, 'prep': [], 'gcore': None,
+                # gdb may fail the kill ("Couldn't get registers: No such
+                # process.", a thread gone with the process): the core
+                # tells what happened.
+                'cmds': [['pid', self.PID], ['kill', self.kill]]}
+        live = res['live'] = self.scen._gdb(wd, plan, 'kernel-live',
+                                            preexec=raise_core_limit)
+        pid = (live['cmds'].get('pid') or {}).get('out') or ''
+        if live.get('fatal') or not pid.strip().isdigit():
+            res['reason'] = 'the live run failed: {}'.format(
+                live.get('fatal') or live['cmds'])
+            return res
+        found = glob.glob(core_glob(pattern, int(pid), wd))
         if not found:
-            res['reason'] = 'no core {} was written (tarantool exited with ' \
-                '{})'.format(core_glob(pattern, p.pid, wd), p.returncode)
+            res['reason'] = 'no core {} was written ({}: {})'.format(
+                core_glob(pattern, int(pid), wd), self.kill,
+                live['cmds']['kill'])
             return res
         plan = {'binary': H.TARANTOOL, 'core': found[0],
                 'sources': self.scen.sources, 'prep': self.scen.prep,
                 'cmds': self.scen.cmds}
         res['core'] = self.scen._gdb(wd, plan, 'kernel')
-        res['returncode'] = p.returncode
-        with open(os.path.join(wd, 'oracle.json')) as fh:
-            res['oracle'] = json.load(fh)
         if H.KEEP != 'cores':
             os.unlink(found[0])
         return res
@@ -726,14 +745,13 @@ class KernelCrash(object):
             shutil.rmtree(self._res['wd'], ignore_errors=True)
 
 
-CRASH_KERNEL = KernelCrash(CRASH)
+# At the SIGABRT stop `continue`: the signal kills the process.
+CRASH_KERNEL = KernelCore(CRASH, 'continue')
 
 # A frame of bt.  gdb marks a return address it took a pointer
 # authentication code off with " [PAC]" (AArch64, glibc of Ubuntu 26.04).
 RX_BT = re.compile(r'^#(\d+) +(?:(0x[0-9a-f]+)(?: \[PAC\])? in )?'
                    r'([\w:<>~.]+)', re.M)
-# A C frame of tarantool's backtrace: its pc and function.
-RX_TT_BT = re.compile(r'^#\d+\s+(0x[0-9a-f]+) in ([^(+]+)')
 
 
 def bt_frames(out):
@@ -772,20 +790,22 @@ class TestBtFrames(unittest.TestCase):
 
 class CrashChecks(object):
     '''tt-fiber at the crash of CRASH, in MODE: live, core (the gcore core
-    of the live stop) or kernel (the kernel's core of another run).'''
+    of the live stop) or kernel (the kernel's core of another live run,
+    killed by the SIGABRT).'''
     MODE = None
 
     def crash(self):
-        '''(the result of the commands, the oracle) of MODE.'''
+        '''(the result of the commands, the live run) of MODE.'''
         if self.MODE == 'kernel':
             r = CRASH_KERNEL.run()
             if r['core'] is None:
                 H.precondition(self, 'kernel-core', r['reason'])
-            res, oracle = r['core'], r['oracle']
+            res, live = r['core'], r['live']
         else:
-            res, oracle = CRASH.run()[self.MODE], CRASH.oracle()
+            res, live = CRASH.run()[self.MODE], CRASH.run()['live']
         self.assertIsNone(res.get('fatal'), res.get('fatal'))
-        return res, oracle
+        self.assertIsNone(live.get('fatal'), live.get('fatal'))
+        return res, live
 
     def cmd(self, key):
         r = self.crash()[0]['cmds'][key]
@@ -796,10 +816,9 @@ class CrashChecks(object):
         return H.strip_core_warnings(r['out'])
 
     def test_crashed(self):
-        # The stop, or the one the core is of: the SIGABRT of abort().
+        # The stop, or the signal the core was written for: the SIGABRT
+        # of abort().
         self.assertEqual(self.cmd('signal'), 6)
-        if self.MODE == 'kernel':
-            self.assertEqual(CRASH_KERNEL.run()['returncode'], -6)
 
     def test_inline_top(self):
         # The precondition of the scenario: inline frames above the
@@ -820,30 +839,33 @@ class CrashChecks(object):
         self.assertEqual(top[inline][1], 'NORMAL_FRAME', top)
 
     def test_switch(self):
-        # bt after tt-fiber N is the stack of fiber N: the C frames the
-        # Lua side saw, in that order, and none of the crash.
-        _, o = self.crash()
-        crash = [f for _, _, f in bt_frames(self.cmd('top.bt'))]
-        self.assertIn('crash_signal_cb', crash)
-        for name in ('tt-sleeper', 'tt-waiter'):
-            fib = o['fibers'][name]
+        # bt after tt-fiber N is the stack of fiber N: the one gdb showed
+        # at the entry of its fiber_yield, when it ran, under that frame.
+        # The yield point itself, fiber_yield returning from the context
+        # switch, is a frame of its own where the switch returns into it,
+        # none where fiber_yield ends in a tail call (a PIE built from
+        # source): the return address is its caller's then.
+        live = self.crash()[1]
+        oracle = fiber_bts(live['setup'])
+        for name, inner in (('tt-sleeper', 'lbox_fiber_sleep'),
+                            ('tt-waiter', 'fiber_cond_wait_timeout')):
             key = name[len('tt-'):]
-            self.assertTrue(self.cmd(key).startswith(
-                'Switching stack unwinder to fiber {} '.format(fib['fid'])),
-                self.cmd(key))
-            want = [(int(pc, 16), f) for pc, f in
-                    (RX_TT_BT.match(s).groups() for s in fib['bt'])]
-            self.assertGreater(len(want), 2, fib['bt'])
+            m = re.match(r'Switching stack unwinder to fiber (\d+) ',
+                         self.cmd(key))
+            self.assertIsNotNone(m, self.cmd(key))
+            want = oracle.get(int(m.group(1)))
+            self.assertIsNotNone(want, (name, sorted(oracle)))
+            names = [f for _, _, f in want]
+            self.assertEqual(names[0], 'fiber_yield', want)
+            for f in (inner, 'lua_fiber_run_f', 'fiber_loop'):
+                self.assertIn(f, names, (name, want))
             out = self.cmd(key + '.bt')
-            frames = bt_frames(out)
-            got = iter((pc, f) for _, pc, f in frames if pc is not None)
-            missing = [w for w in want if w not in got]
-            self.assertEqual(missing, [], '{} ({}): the frames tarantool '
-                             'saw, {}, are not in bt:\n{}'.format(
-                                 name, self.MODE, fib['bt'], out))
-            names = [f for _, _, f in frames]
-            for f in (crash[0], 'crash_signal_cb'):
-                self.assertNotIn(f, names, '{} ({})'.format(name, self.MODE))
+            got = [(pc, f) for _, pc, f in bt_frames(out)]
+            if got and got[0][1] == 'fiber_yield':
+                got = got[1:]
+            self.assertEqual(got, [(pc, f) for _, pc, f in want[1:]],
+                             '{} ({}): bt is not the one of the fiber at its '
+                             'yield:\n{}'.format(name, self.MODE, out))
 
     def test_selected(self):
         # tt-fiber selects the newest frame of the fiber, the first one
@@ -877,8 +899,10 @@ class TestCrashLive(CrashChecks, DbgCase):
         # to the SIGABRT: bt there is still the fiber's, from under the
         # inline frames of the new stop.
         setup = self.result(CRASH, 'live')['setup']
-        self.assertEqual([err for _, _, err in setup], [None] * 4, setup)
-        self.assertEqual(setup[2][1], self.cmd('sleeper.bt'))
+        self.assertEqual([err for _, _, err in setup],
+                         [None] * len(CRASH_SETUP), setup)
+        self.assertEqual(setup[len(FIBERS_SETUP) + 3][1],
+                         self.cmd('sleeper.bt'))
 
 
 # The selection when the thread runs: tt-fiber at a breakpoint, then
