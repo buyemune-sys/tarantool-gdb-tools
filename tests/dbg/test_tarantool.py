@@ -748,6 +748,18 @@ class KernelCore(object):
 # At the SIGABRT stop `continue`: the signal kills the process.
 CRASH_KERNEL = KernelCore(CRASH, 'continue')
 
+# Where glibc's abort() stops under inline frames, with its debug info:
+# x86_64.  On AArch64 (glibc 2.35, 2.39, 2.43 of Ubuntu 22.04, 24.04 and
+# 26.04, dbg.yml run 45297778863) __pthread_kill_implementation is a
+# normal frame 0 and __pthread_kill_internal a tail call (TAILCALL_FRAME)
+# at 1.  gdb tries its inline and tail call unwinders before the Python
+# ones, but the tail call one only for the caller of a frame its DWARF
+# unwinder made (standard_unwinders, frame-unwind.c), which comes after
+# them: such a frame was asked about first.  Nothing sits above the frame
+# the fiber unwinder is asked about first, as on x86_64 without the debug
+# info.
+GLIBC_INLINE_TOP = H.ARCH == 'x64'
+
 # A frame of bt.  gdb marks a return address it took a pointer
 # authentication code off with " [PAC]" (AArch64, glibc of Ubuntu 26.04).
 RX_BT = re.compile(r'^#(\d+) +(?:(0x[0-9a-f]+)(?: \[PAC\])? in )?'
@@ -827,6 +839,13 @@ class CrashChecks(object):
         inline = 0
         while inline < len(top) and top[inline][1] == 'INLINE_FRAME':
             inline += 1
+        if inline == 0 and not GLIBC_INLINE_TOP:
+            # No frame above the one the unwinder is asked about first:
+            # the bug of #36 cannot happen at this crash.
+            self.assertEqual(top[0][1], 'NORMAL_FRAME', top)
+            self.skipTest('glibc-inline-top: none on {} (glibc does not '
+                          'inline __pthread_kill_implementation there, frame '
+                          '0 is a normal one: {})'.format(H.ARCH, top[:2]))
         if inline == 0:
             libc = [s for s in self.cmd('libs').split('\n')
                     if re.search(r'/libc\.so\.6$', s.strip())]
